@@ -131,6 +131,14 @@ def build_parser() -> argparse.ArgumentParser:
         finish.add_argument("--request-id", required=True)
         if command_name == "fail":
             finish.add_argument("--reason", required=True)
+    execute = dispatch_commands.add_parser("execute")
+    execute.add_argument("task_id")
+    execute.add_argument("executor_id")
+    execute.add_argument("baseline_ref")
+    execute.add_argument("--worktree", required=True, help="Path to the isolated git worktree to execute in")
+    execute.add_argument("--common-dir", required=True, help="Registered repo git common dir the worktree must belong to")
+    execute.add_argument("--request-id-prefix", default="cg")
+    execute.add_argument("--ttl", type=int)
     return parser
 
 
@@ -246,10 +254,17 @@ def main(argv=None) -> int:
             result = dispatcher.heartbeat(args.lease_id, args.executor_id, args.request_id, args.ttl)
         elif args.dispatch_command == "complete":
             result = dispatcher.complete(args.lease_id, args.executor_id, args.baseline_ref, args.request_id)
+        elif args.dispatch_command == "execute":
+            from .executors import build_cursor_grok_executor
+            executor = build_cursor_grok_executor(repository, executor_id=args.executor_id)
+            result = executor.execute(
+                args.task_id, Path(args.worktree), args.common_dir, args.baseline_ref,
+                args.request_id_prefix, args.ttl or 900,
+            )
         else:
             result = dispatcher.fail(args.lease_id, args.executor_id, args.baseline_ref,
                                      args.request_id, args.reason)
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+        print(json.dumps(result.__dict__, ensure_ascii=False, indent=2, default=str))
         return 0
     orchestrator = Orchestrator(repository)
     projects = selected_projects(settings.projects, args.project)

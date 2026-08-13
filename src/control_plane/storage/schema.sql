@@ -288,6 +288,18 @@ CREATE TABLE IF NOT EXISTS dispatcher_operation (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS task_progress (
+  id TEXT PRIMARY KEY,
+  run_id TEXT,
+  lease_id TEXT NOT NULL REFERENCES task_lease(id),
+  executor_id TEXT NOT NULL,
+  message TEXT NOT NULL,
+  request_id TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_progress_lease_created ON task_progress(lease_id, created_at);
+
 CREATE INDEX IF NOT EXISTS idx_run_project_started ON agent_run(project_id, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_review_project_status ON review_item(project_id, status);
 CREATE INDEX IF NOT EXISTS idx_finding_fingerprint ON finding(fingerprint);
