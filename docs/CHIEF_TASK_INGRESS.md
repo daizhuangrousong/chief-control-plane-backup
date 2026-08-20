@@ -31,13 +31,20 @@ PYTHONPATH=src python3 scripts/run_chief_task_ingress.py \
 Do not enable a LaunchAgent for this script in R2. Use a temporary database for development.
 Do not point the importer at the R1 `var/cursor-r1.sqlite3`.
 
-Identical bytes are idempotent. The same task id with different content is a conflict:
-the task is moved to BLOCKED and the executor is not started.
+Identical bytes are idempotent. The same task id with different task or facts bytes is a
+conflict receipt: `originalHash` and `attemptedHash` are both recorded, and the existing
+DRAFT/READY/RUNNING/REVIEW/BLOCKED state and version are left unchanged.
+The first successful register seals the envelope hash in an inbox identity sidecar.
+A missing or corrupt sidecar fails closed.
+
+Workspace HEAD must equal the Dispatcher-registered baseline or the envelope is BLOCKED
+before the executor starts. `scripts/run_cursor_runner.py` accepts optional `--inbox-dir`
+and writes short receipts; omitting it keeps the R1 runner behavior.
 
 ## Receipts
 
 Inbox files are short JSON. Chief can decide whether to drill down from `state`, `error`,
-`sourceHash`, `taskVersion`, `matchedRules` and `leaseId`.
+`sourceHash`, `originalHash`, `attemptedHash`, `taskVersion`, `matchedRules` and `leaseId`.
 The runner reporter updates CLAIMED/RUNNING/REVIEW/BLOCKED facts and never marks REVIEW as DONE.
 
 ## Not authorized in R2

@@ -12,8 +12,8 @@ from control_plane.services import (
     CursorDaemon, CursorRunner, LeaseDispatcher,
 )
 from control_plane.services.chief_task_ingress import (
-    DEFAULT_MAX_BYTES, ENVELOPE_VERSION, ChiefTaskImporter, ChiefTaskReporter,
-    atomic_write_json, parse_envelope, read_outbox_bytes,
+    DEFAULT_MAX_BYTES, ENVELOPE_VERSION, ChiefTaskImporter, ChiefTaskIngressError,
+    ChiefTaskReporter, atomic_write_json, load_ingress_config, parse_envelope, read_outbox_bytes,
 )
 from control_plane.storage import Repository
 
@@ -131,6 +131,9 @@ class ChiefTaskIngressTest(unittest.TestCase):
         self.assertIn("os.replace", source)
         self.assertIn("os.fsync", source)
         self.assertIn("O_NOFOLLOW", source)
+        self.assertIn("fstat", source)
+        loaded = load_ingress_config(str(repo / "config" / "chief-task-ingress.example.json"))
+        self.assertEqual(loaded["allowedProjects"], ["control-panel"])
 
     def test_end_to_end_file_to_review_inbox_and_repeat_is_idempotent(self):
         path = self.drop(self.envelope())
@@ -185,16 +188,21 @@ class ChiefTaskIngressTest(unittest.TestCase):
         self.assertFalse(self.marker.exists())
 
     def test_same_id_different_content_blocks_with_zero_executor_calls(self):
-        self.drop(self.envelope("TASK-R2-DUP", title="Original"))
-        self.importer.ingest_once()
-        self.assertEqual(self.repository.get_task("TASK-R2-DUP")["state"], "READY")
+        first = self.drop(self.envelope("TASK-R2-DUP", title="Original"))
+        original = self.importer.ingest_once()[0]
+        before = self.repository.get_task("TASK-R2-DUP")
+        self.assertEqual(before["state"], "READY")
         self.drop(self.envelope("TASK-R2-DUP", title="Changed after drop"))
         receipt = self.importer.ingest_once()[0]
-        self.assertEqual(receipt["state"], "BLOCKED")
+        after = self.repository.get_task("TASK-R2-DUP")
+        self.assertEqual(after["state"], "READY")
+        self.assertEqual(after["version"], before["version"])
+        self.assertEqual(receipt["originalHash"], original["sourceHash"])
+        self.assertNotEqual(receipt["attemptedHash"], original["sourceHash"])
+        self.assertEqual(receipt["sourceHash"], original["sourceHash"])
         self.assertIn("block.duplicate_id_conflict", receipt["matchedRules"])
-        self.run_daemon()
         self.assertFalse(self.marker.exists())
-        self.assertEqual(self.repository.get_task("TASK-R2-DUP")["state"], "BLOCKED")
+        self.assertTrue(first.is_file())
 
     def test_symlink_is_rejected_with_zero_executor_calls(self):
         real = self.root / "elsewhere.json"
@@ -252,6 +260,135 @@ class ChiefTaskIngressTest(unittest.TestCase):
         atomic_write_json(target, {"ok": False, "schemaVersion": "chief-task-receipt/1.0.0"})
         payload = json.loads(target.read_text(encoding="utf-8"))
         self.assertEqual(payload["ok"], False)
+
+    def test_conflict_on_review_does_not_mutate_task(self):
+        self.drop(self.envelope("TASK-R2-REV", title="Original review"))
+        first = self.importer.ingest_once()[0]
+        result = self.run_daemon()
+        self.assertEqual(result["task_state"], "REVIEW")
+        before = self.repository.get_task("TASK-R2-REV")
+        self.drop(self.envelope("TASK-R2-REV", title="Conflict after review"))
+        receipt = self.importer.ingest_once()[0]
+        after = self.repository.get_task("TASK-R2-REV")
+        self.assertEqual(after["state"], "REVIEW")
+        self.assertEqual(after["version"], before["version"])
+        self.assertEqual(receipt["originalHash"], first["sourceHash"])
+        self.assertNotEqual(receipt["attemptedHash"], receipt["originalHash"])
+        self.assertEqual(receipt["sourceHash"], first["sourceHash"])
+        self.assertIn("block.duplicate_id_conflict", receipt["matchedRules"])
+        self.run_daemon()
+        self.assertEqual(self.marker.read_text(encoding="utf-8").count("called"), 1)
+
+    def test_facts_only_drift_conflicts_and_keeps_original_hash(self):
+        payload = self.envelope("TASK-R2-FACTS")
+        self.drop(payload)
+        first = self.importer.ingest_once()[0]
+        payload["facts"]["architectureChange"] = True
+        self.drop(payload)
+        receipt = self.importer.ingest_once()[0]
+        task = self.repository.get_task("TASK-R2-FACTS")
+        self.assertEqual(task["state"], "READY")
+        self.assertEqual(task["version"], first["taskVersion"])
+        self.assertEqual(receipt["originalHash"], first["sourceHash"])
+        self.assertNotEqual(receipt["attemptedHash"], first["sourceHash"])
+        self.assertEqual(receipt["sourceHash"], first["sourceHash"])
+        self.assertIn("block.duplicate_id_conflict", receipt["matchedRules"])
+        self.assertFalse(self.marker.exists())
+
+    def test_real_runner_script_writes_inbox_receipt(self):
+        self.drop(self.envelope("TASK-R2-SCRIPT"))
+        self.importer.ingest_once()
+        self.assertEqual(self.repository.get_task("TASK-R2-SCRIPT")["state"], "READY")
+        config_path = self.root / "projects.local.json"
+        config_path.write_text(json.dumps({
+            "database": str(self.db),
+            "projects": [{
+                "id": "control-panel", "name": "Panel", "kind": "control_plane", "owner": "Owner",
+                "root": str(self.root), "ledger": "TASKS.md", "status": "STATE.md",
+                "knowledge_roots": [], "enabled_agents": ["knowledge", "observer", "release"],
+            }],
+        }), encoding="utf-8")
+        script = Path(__file__).resolve().parents[1] / "scripts" / "run_cursor_runner.py"
+        argv = [
+            sys.executable, str(script),
+            "--config", str(config_path),
+            "--executor-id", "cursor-r2",
+            "--executor-command", json.dumps(self.command),
+            "--project", "control-panel",
+            "--idle-seconds", "0",
+            "--log-file", str(self.root / "runner.log"),
+            "--halt-file", str(self.root / "halt.json"),
+            "--max-cycles", "1",
+            "--inbox-dir", str(self.inbox),
+        ]
+        env = dict(__import__("os").environ)
+        env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
+        completed = subprocess.run(argv, capture_output=True, text=True, env=env, cwd=str(self.root), timeout=20)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(self.repository.get_task("TASK-R2-SCRIPT")["state"], "REVIEW")
+        receipt = json.loads((self.inbox / "TASK-R2-SCRIPT.json").read_text(encoding="utf-8"))
+        self.assertEqual(receipt["state"], "REVIEW")
+        self.assertTrue(receipt.get("leaseId"))
+        self.assertEqual(self.marker.read_text(encoding="utf-8").count("called"), 1)
+        completed_again = subprocess.run(argv, capture_output=True, text=True, env=env, cwd=str(self.root), timeout=20)
+        self.assertEqual(completed_again.returncode, 0, completed_again.stderr)
+        self.assertEqual(self.marker.read_text(encoding="utf-8").count("called"), 1)
+
+    def test_baseline_mismatch_blocks_with_zero_executor_calls(self):
+        self.dispatcher.set_project_baseline("control-panel", "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", "planner")
+        self.drop(self.envelope("TASK-R2-BASE", title="Baseline mismatch"))
+        receipt = self.importer.ingest_once()[0]
+        self.assertEqual(receipt["state"], "BLOCKED")
+        self.assertTrue(
+            "baseline" in (receipt["error"] or "").casefold()
+            or any("baseline" in item for item in receipt["matchedRules"])
+        )
+        self.run_daemon()
+        self.assertFalse(self.marker.exists())
+        self.assertEqual(self.repository.get_task("TASK-R2-BASE")["state"], "BLOCKED")
+
+    def test_missing_config_and_path_overlap_fail_closed(self):
+        empty = self.root / "empty-ingress.json"
+        empty.write_text("{}\n", encoding="utf-8")
+        with self.assertRaises(ChiefTaskIngressError):
+            load_ingress_config(str(empty))
+        nested_out = self.root / "nested-out"
+        nested_in = nested_out / "inbox"
+        nested_out.mkdir()
+        nested_in.mkdir()
+        overlap = self.root / "overlap-ingress.json"
+        overlap.write_text(json.dumps({
+            "outboxDir": str(nested_out.resolve()),
+            "inboxDir": str(nested_in.resolve()),
+            "allowedProjects": ["control-panel"],
+            "maxBytes": 1024,
+        }), encoding="utf-8")
+        with self.assertRaises(ChiefTaskIngressError):
+            load_ingress_config(str(overlap))
+        unknown = self.root / "unknown-ingress.json"
+        unknown.write_text(json.dumps({
+            "outboxDir": str(self.outbox.resolve()),
+            "inboxDir": str(self.inbox.resolve()),
+            "allowedProjects": ["control-panel"],
+            "maxBytes": 1024,
+            "extra": True,
+        }), encoding="utf-8")
+        with self.assertRaises(ChiefTaskIngressError):
+            load_ingress_config(str(unknown))
+        self.assertFalse(self.marker.exists())
+
+    def test_corrupt_sidecar_fail_closed_does_not_rerun(self):
+        self.drop(self.envelope("TASK-R2-SIDE", title="Has identity"))
+        first = self.importer.ingest_once()[0]
+        sidecar = self.inbox / "TASK-R2-SIDE.identity.json"
+        self.assertTrue(sidecar.is_file())
+        sidecar.write_text("{not-json", encoding="utf-8")
+        receipt = self.importer.ingest_once()[0]
+        after = self.repository.get_task("TASK-R2-SIDE")
+        self.assertEqual(after["state"], "READY")
+        self.assertEqual(after["version"], first["taskVersion"])
+        self.assertIn("identity", (receipt["error"] or "").casefold())
+        self.assertFalse(self.marker.exists())
 
 
 if __name__ == "__main__":

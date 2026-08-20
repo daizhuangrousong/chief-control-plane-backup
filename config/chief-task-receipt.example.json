@@ -2,6 +2,8 @@
   "schemaVersion": "chief-task-receipt/1.0.0",
   "taskId": "TASK-R2-EXAMPLE",
   "sourceHash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "originalHash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "attemptedHash": null,
   "taskVersion": 2,
   "state": "REVIEW",
   "matchedRules": ["auto.low_risk_all_clear"],

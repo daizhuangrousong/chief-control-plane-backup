@@ -1,8 +1,8 @@
-# BLOCKED · R2 Chief 任务文档入口
+# BLOCKED · R2.1 Chief 任务文档入口补正
 
 ## Feishu outbound
 
-BLOCKED: `FEISHU_APP_ID` and `FEISHU_APP_SECRET` are unset. R2 did not send cards or request credentials.
+BLOCKED: `FEISHU_APP_ID` and `FEISHU_APP_SECRET` are unset. R2.1 did not send cards or request credentials.
 
 ## Real Cursor `--print`
 
@@ -10,4 +10,4 @@ BLOCKED: `FEISHU_APP_ID` and `FEISHU_APP_SECRET` are unset. R2 did not send card
 
 ## LaunchAgent
 
-R1 `com.pojian.chief-cursor-runner` 保持 idle。R2 未安装新的 LaunchAgent。
+R1 `com.pojian.chief-cursor-runner` 保持 idle。R2 未安装新的 LaunchAgent。`--inbox-dir` 仅为可选；未配置时保持 R1 行为。

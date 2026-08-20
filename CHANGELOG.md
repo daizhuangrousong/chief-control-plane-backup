@@ -7,6 +7,7 @@
 - Added a gitignored outbox/inbox file contract so Chief can drop one strict JSON task envelope without using the CLI or SQLite.
 - The importer registers DRAFT through TaskRegistry, runs the existing decision policy, and writes a short receipt. Identical files are idempotent; illegal or conflicting drops never start Cursor.
 - The runner may publish read-only CLAIMED/RUNNING/REVIEW/BLOCKED receipts. REVIEW is never auto-completed. No R2 LaunchAgent is enabled.
+- R2.1: envelope identity is sealed in an inbox sidecar; conflicts never mutate existing task state; workspace HEAD must match the Dispatcher baseline; `run_cursor_runner.py --inbox-dir` writes receipts.
 
 ### R1 — Official Cursor CLI bootstrap
 

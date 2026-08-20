@@ -62,6 +62,7 @@ def build_runner_parser() -> argparse.ArgumentParser:
     parser.add_argument("--halt-file", required=True, help="Absolute halt file written on circuit-breaker")
     parser.add_argument("--reject-limit", type=int, default=3)
     parser.add_argument("--max-cycles", type=int, default=0)
+    parser.add_argument("--inbox-dir", default=None, help="Optional absolute Chief inbox for status receipts")
     return parser
 
 
@@ -70,9 +71,20 @@ def parse_runner_argv(argv: Optional[Sequence[str]] = None) -> argparse.Namespac
     args.executor_command = parse_executor_command(args.executor_command)
     if args.reject_limit < 1:
         raise CursorLaunchError("reject-limit must be >= 1")
+    if args.idle_seconds < 0:
+        raise CursorLaunchError("idle-seconds must be >= 0")
     for path_arg in (args.config, args.log_file, args.halt_file):
         if not Path(path_arg).is_absolute():
             raise CursorLaunchError("config, log-file and halt-file must be absolute paths")
+    if args.inbox_dir:
+        inbox = Path(args.inbox_dir)
+        if not inbox.is_absolute():
+            raise CursorLaunchError("inbox-dir must be an absolute path")
+        if inbox.exists() and (inbox.is_symlink() or not inbox.is_dir()):
+            raise CursorLaunchError("inbox-dir must be a directory")
+        args.inbox_dir = str(inbox)
+    else:
+        args.inbox_dir = None
     return args
 
 

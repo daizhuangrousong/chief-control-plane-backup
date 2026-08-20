@@ -6,6 +6,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from control_plane.config import load_settings
+from control_plane.services.chief_task_ingress import ChiefTaskReporter
 from control_plane.services.cursor_daemon import CursorDaemon
 from control_plane.services.cursor_launch import parse_runner_argv
 from control_plane.services.cursor_runner import CursorRunner, redact_secrets
@@ -33,16 +34,21 @@ def main(argv=None) -> int:
     for project in settings.projects:
         repository.upsert_project(project)
     emit = configure_log(args.log_file)
+    dispatcher = LeaseDispatcher(repository)
     runner = CursorRunner(
-        LeaseDispatcher(repository),
+        dispatcher,
         executor_id=args.executor_id,
         executor_command=args.executor_command,
         timeout_seconds=args.timeout,
         log=emit,
     )
+    reporter = None
+    if args.inbox_dir:
+        reporter = ChiefTaskReporter(repository, Path(args.inbox_dir), dispatcher=dispatcher).report_cycle
     result = CursorDaemon(
         runner, args.project, args.idle_seconds, log=emit,
         halt_file=Path(args.halt_file), reject_limit=args.reject_limit,
+        reporter=reporter,
     ).run(args.max_cycles)
     if result.get("status") == "halted":
         emit(redact_secrets("halted waiting for Chief: {}".format(result.get("reason"))))

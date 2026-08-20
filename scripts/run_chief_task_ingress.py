@@ -6,7 +6,10 @@ import time
 from pathlib import Path
 
 from control_plane.config import load_settings
-from control_plane.services.chief_task_ingress import ChiefTaskImporter, load_ingress_config
+from control_plane.services.chief_task_ingress import (
+    MAX_IDLE_SECONDS, ChiefTaskImporter, load_ingress_config,
+)
+from control_plane.services.dispatcher import LeaseDispatcher
 from control_plane.storage import Repository
 
 
@@ -21,19 +24,23 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
+    if args.idle_seconds < 0 or args.idle_seconds > MAX_IDLE_SECONDS:
+        raise SystemExit("idle-seconds must be between 0 and {}".format(MAX_IDLE_SECONDS))
     settings = load_settings(args.config)
     ingress_cfg = load_ingress_config(args.ingress_config)
     repository = Repository(settings.database)
     repository.migrate()
     for project in settings.projects:
         repository.upsert_project(project)
+    dispatcher = LeaseDispatcher(repository)
     importer = ChiefTaskImporter(
         repository,
         Path(ingress_cfg["outboxDir"]),
         Path(ingress_cfg["inboxDir"]),
         settings.projects,
-        allowed_projects=tuple(ingress_cfg.get("allowedProjects") or ["control-panel"]),
-        max_bytes=int(ingress_cfg.get("maxBytes") or 262144),
+        allowed_projects=tuple(ingress_cfg["allowedProjects"]),
+        max_bytes=int(ingress_cfg["maxBytes"]),
+        dispatcher=dispatcher,
     )
     cycles = 0
     while True:
