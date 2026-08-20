@@ -1,10 +1,12 @@
-# Chief Task Document Ingress (R2)
+# Chief Task Document Ingress (R3)
 
 Chief writes one atomic JSON envelope into a gitignored `chief-task-outbox/`.
-Control Plane observes complete regular files, registers them through `TaskRegistry`,
-runs `DecisionPolicyEngine`, and writes a short receipt into `chief-task-inbox/`.
-The existing Cursor Runner still claims READY work through `LeaseDispatcher`.
-There is no second queue and no LaunchAgent for this importer in R2.
+A limited importer/reporter LaunchAgent observes complete regular files, registers
+them through `TaskRegistry`, runs `DecisionPolicyEngine`, and writes a short receipt
+into `chief-task-inbox/`. Identity sidecars are scanned on every cycle so
+DRAFT/READY/CLAIMED/RUNNING/REVIEW/BLOCKED facts are published without changing
+task state. The existing Cursor Runner claims READY work through `LeaseDispatcher`
+and is passed `--inbox-dir`. There is no second queue.
 
 ## Envelope
 
@@ -14,40 +16,43 @@ Required object keys are only `schemaVersion`, `task`, and `facts`.
 Unknown fields, symlinks, non-regular files, paths outside the outbox, truncated JSON
 and files larger than `maxBytes` are rejected with a BLOCKED receipt. Cursor is not started.
 
-Local directories (gitignored):
+Local directories and config (gitignored):
 
 - `chief-task-outbox/`
 - `chief-task-inbox/`
+- `config/chief-task-ingress.local.json`
+- `config/projects.cursor-r3.local.json`
+- `var/cursor-r3.sqlite3`
 
-## Importer
+Do not point R3 at the R1 `var/cursor-r1.sqlite3`.
 
-```bash
-PYTHONPATH=src python3 scripts/run_chief_task_ingress.py \
-  --config /absolute/config/projects.local.json \
-  --ingress-config /absolute/config/chief-task-ingress.local.json \
-  --max-cycles 1
-```
+## Importer / reporter
 
-Do not enable a LaunchAgent for this script in R2. Use a temporary database for development.
-Do not point the importer at the R1 `var/cursor-r1.sqlite3`.
+`scripts/run_chief_task_ingress.py` is the resident entry. It requires `--log-file`
+and `--halt-file`. Identical failures write the halt file and exit 0 so LaunchAgent
+`KeepAlive SuccessfulExit=false` stays stopped. Empty queues do not rewrite unchanged
+receipts or unrelated inbox files.
 
-Identical bytes are idempotent. The same task id with different task or facts bytes is a
-conflict receipt: `originalHash` and `attemptedHash` are both recorded, and the existing
-DRAFT/READY/RUNNING/REVIEW/BLOCKED state and version are left unchanged.
-The first successful register seals the envelope hash in an inbox identity sidecar.
-A missing or corrupt sidecar fails closed.
+Copy `scripts/com.pojian.chief-task-ingress.plist.example`. Enable it only after the
+R3 code commit, and only for Control Plane.
 
 Workspace HEAD must equal the Dispatcher-registered baseline or the envelope is BLOCKED
-before the executor starts. `scripts/run_cursor_runner.py` accepts optional `--inbox-dir`
-and writes short receipts; omitting it keeps the R1 runner behavior.
+before the executor starts. `scripts/run_cursor_runner.py --inbox-dir` writes receipts;
+omitting it keeps R1 runner behavior.
 
 ## Receipts
 
 Inbox files are short JSON. Chief can decide whether to drill down from `state`, `error`,
 `sourceHash`, `originalHash`, `attemptedHash`, `taskVersion`, `matchedRules` and `leaseId`.
-The runner reporter updates CLAIMED/RUNNING/REVIEW/BLOCKED facts and never marks REVIEW as DONE.
+The identity publisher updates CLAIMED/RUNNING/REVIEW/BLOCKED facts and never marks
+REVIEW as DONE. Halt and rejected cycles publish a final receipt without mutating the task.
 
-## Not authorized in R2
+## Rollback
+
+R1 `com.pojian.chief-cursor-runner` remains the rollback baseline. Activation failure
+must restore the original R1 plist/paths and prove idle. Do not merge, push, or deploy.
+
+## Not authorized in R3
 
 Julius, Director, Eval, Feishu credentials, merge, push, deploy, schema changes,
-a second real Cursor `--print`, and a resident R2 importer/runner.
+a second real Cursor `--print`, and any project other than `control-panel`.

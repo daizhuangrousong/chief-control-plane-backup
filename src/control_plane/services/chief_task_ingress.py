@@ -301,8 +301,7 @@ class ChiefTaskReporter:
                 original_hash=sealed,
                 attempted_hash=attempted_hash,
             )
-            atomic_write_json(self.receipt_path(task_id), receipt)
-            return receipt
+            return self._write_if_changed(task_id, previous, receipt)
         active_lease = None
         if self.dispatcher is not None:
             active = self.dispatcher.active_lease_for_project(task["project_id"])
@@ -319,15 +318,85 @@ class ChiefTaskReporter:
             original_hash=sealed,
             attempted_hash=attempted_hash,
         )
-        atomic_write_json(self.receipt_path(task_id), receipt)
-        return receipt
+        return self._write_if_changed(task_id, previous, receipt)
 
     def report_cycle(self, result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        status = result.get("status")
+        if status == "idle":
+            return None
         task_id = result.get("task_id")
         if not task_id:
             return None
-        error = result.get("error") if result.get("status") in {"rejected", "failed", "halted"} else None
+        error = result.get("error") if status in {"rejected", "failed", "halted"} else None
+        if status == "halted" and not error:
+            error = result.get("reason")
         return self.publish_task(str(task_id), lease_id=result.get("lease_id"), error=error)
+
+    def list_identity_ids(self) -> List[str]:
+        if not self.inbox.is_dir():
+            return []
+        found = []
+        for path in sorted(self.inbox.iterdir()):
+            if not path.name.endswith(".identity.json") or path.name.startswith("."):
+                continue
+            task_id = path.name[: -len(".identity.json")]
+            try:
+                identity = read_identity(self.inbox, task_id)
+            except ChiefTaskIngressError:
+                continue
+            if identity:
+                found.append(task_id)
+        return found
+
+    def publish_identities(self) -> List[Dict[str, Any]]:
+        updated = []
+        for task_id in self.list_identity_ids():
+            task = self.repository.get_task(task_id)
+            if task is None:
+                continue
+            previous = self._previous(task_id)
+            lease_id = None
+            if self.dispatcher is not None:
+                active = self.dispatcher.active_lease_for_project(task["project_id"])
+                if active and active.get("task_id") == task_id:
+                    lease_id = active.get("lease_id")
+            lease_id = lease_id or (previous or {}).get("leaseId")
+            error = None
+            if previous and previous.get("state") == task["state"]:
+                error = previous.get("error")
+            signature = (
+                task["state"],
+                int(task["version"]),
+                lease_id,
+                error,
+                tuple((previous or {}).get("matchedRules") or []),
+            )
+            previous_signature = None
+            if previous:
+                previous_signature = (
+                    previous.get("state"),
+                    previous.get("taskVersion"),
+                    previous.get("leaseId"),
+                    previous.get("error"),
+                    tuple(previous.get("matchedRules") or []),
+                )
+            if signature == previous_signature:
+                continue
+            updated.append(self.publish_task(
+                task_id,
+                lease_id=lease_id,
+                error=error,
+                matched_rules=(previous or {}).get("matchedRules") or [],
+            ))
+        return updated
+
+    def _write_if_changed(
+        self, task_id: str, previous: Optional[Dict[str, Any]], receipt: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        if previous is not None and _receipt_signature(previous) == _receipt_signature(receipt):
+            return previous
+        atomic_write_json(self.receipt_path(task_id), receipt)
+        return receipt
 
     def _previous(self, task_id: str) -> Optional[Dict[str, Any]]:
         path = self.receipt_path(task_id)
@@ -382,6 +451,11 @@ class ChiefTaskImporter:
                     raise
                 receipts.append(self._blocked_file(path.stem, None, error))
         return receipts
+
+    def cycle(self) -> Dict[str, Any]:
+        ingested = self.ingest_once()
+        published = self.reporter.publish_identities()
+        return {"ingested": ingested, "published": published}
 
     def ingest_file(self, path: Path) -> Dict[str, Any]:
         path = Path(path)
@@ -504,6 +578,19 @@ class ChiefTaskImporter:
                 continue
             entries.append(item)
         return entries
+
+
+def _receipt_signature(payload: Dict[str, Any]) -> tuple:
+    return (
+        payload.get("state"),
+        payload.get("taskVersion"),
+        payload.get("leaseId"),
+        payload.get("error"),
+        tuple(payload.get("matchedRules") or []),
+        payload.get("attemptedHash"),
+        payload.get("sourceHash"),
+        payload.get("originalHash"),
+    )
 
 
 def _absolute_dir(value: Any, field_name: str) -> Path:

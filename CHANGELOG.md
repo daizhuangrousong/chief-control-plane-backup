@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### R3 — Chief document dispatch activation
+
+- The importer/reporter scans identity sidecars and publishes DRAFT/READY/CLAIMED/RUNNING/REVIEW/BLOCKED receipts without changing task state.
+- Halt/rejected cycles write a final receipt before the daemon returns. Unchanged receipts are not rewritten.
+- Added a limited `com.pojian.chief-task-ingress` LaunchAgent example and wired the runner example to `--inbox-dir` on the R3 worktree.
+
 ### R2 — Chief task document ingress
 
 - Added a gitignored outbox/inbox file contract so Chief can drop one strict JSON task envelope without using the CLI or SQLite.

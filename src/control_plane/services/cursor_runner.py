@@ -67,6 +67,13 @@ class CursorRunner:
         task = self.dispatcher.next(self.executor_id, project_id)
         if task is None:
             return {"status": "idle", "reason": "no eligible READY task"}
+        try:
+            return self._claim_and_run(task, request_id)
+        except CursorAdapterError as error:
+            error.task_id = task["id"]
+            raise
+
+    def _claim_and_run(self, task: Dict[str, Any], request_id: str) -> Dict[str, Any]:
         self._assert_safe_to_claim(task)
         baseline = self.dispatcher.get_project_baseline(task["project_id"])
         workspace = self._workspace(task)

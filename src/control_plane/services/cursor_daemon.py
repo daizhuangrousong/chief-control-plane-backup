@@ -56,7 +56,7 @@ class CursorDaemon:
                 last = self.runner.run_next(self.project_id)
             except CursorAdapterError as error:
                 self._log(redact_secrets("rejected: {}".format(error)))
-                last = {"status": "rejected", "error": str(error)}
+                last = {"status": "rejected", "error": str(error), "task_id": getattr(error, "task_id", None)}
             status = last.get("status") or "unknown"
             if status == "idle":
                 self._reject_fingerprint = None
@@ -69,6 +69,10 @@ class CursorDaemon:
                 halted = self._note_rejection(last)
                 if halted is not None:
                     halted["cycles"] = cycles + 1
+                    if last.get("task_id"):
+                        halted["task_id"] = last["task_id"]
+                    if self._reporter:
+                        self._reporter(halted)
                     return halted
             if self._reporter:
                 self._reporter(last)

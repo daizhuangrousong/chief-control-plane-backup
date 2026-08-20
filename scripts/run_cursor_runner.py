@@ -31,6 +31,8 @@ def main(argv=None) -> int:
     settings = load_settings(args.config)
     repository = Repository(settings.database)
     repository.migrate()
+    with repository.connect() as connection:
+        connection.execute("PRAGMA journal_mode=WAL")
     for project in settings.projects:
         repository.upsert_project(project)
     emit = configure_log(args.log_file)

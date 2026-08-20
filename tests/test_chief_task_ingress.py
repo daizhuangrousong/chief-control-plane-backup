@@ -3,6 +3,8 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -15,6 +17,7 @@ from control_plane.services.chief_task_ingress import (
     DEFAULT_MAX_BYTES, ENVELOPE_VERSION, ChiefTaskImporter, ChiefTaskIngressError,
     ChiefTaskReporter, atomic_write_json, load_ingress_config, parse_envelope, read_outbox_bytes,
 )
+from control_plane.services.cursor_launch import plist_keepalive_is_limited, plist_program_arguments
 from control_plane.storage import Repository
 
 
@@ -36,6 +39,14 @@ CLEAR_FACTS = {
 FAKE_EXECUTOR = """
 import sys
 from pathlib import Path
+Path(sys.argv[1]).write_text('called\\n', encoding='utf-8')
+"""
+
+FAKE_SLOW = """
+import sys, time
+from pathlib import Path
+Path(sys.argv[1]).write_text('started\\n', encoding='utf-8')
+time.sleep(1.5)
 Path(sys.argv[1]).write_text('called\\n', encoding='utf-8')
 """
 
@@ -389,6 +400,136 @@ class ChiefTaskIngressTest(unittest.TestCase):
         self.assertEqual(after["version"], first["taskVersion"])
         self.assertIn("identity", (receipt["error"] or "").casefold())
         self.assertFalse(self.marker.exists())
+
+    def test_identity_publisher_sees_running_then_review(self):
+        with self.repository.connect() as connection:
+            connection.execute("PRAGMA journal_mode=WAL")
+        slow = self.root / "slow_executor.py"
+        slow.write_text(FAKE_SLOW, encoding="utf-8")
+        self.command = [sys.executable, str(slow), str(self.marker)]
+        self.drop(self.envelope("TASK-R3-SLOW", title="Slow fake"))
+        self.importer.ingest_once()
+        seen = []
+        stop = threading.Event()
+
+        def pump():
+            while not stop.is_set():
+                self.importer.reporter.publish_identities()
+                path = self.inbox / "TASK-R3-SLOW.json"
+                if path.is_file():
+                    seen.append(json.loads(path.read_text(encoding="utf-8"))["state"])
+                    if seen[-1] == "REVIEW":
+                        return
+                time.sleep(0.05)
+
+        worker = threading.Thread(target=pump)
+        worker.start()
+        try:
+            result = self.run_daemon()
+        finally:
+            stop.set()
+            worker.join(timeout=5)
+        self.assertEqual(result["task_state"], "REVIEW")
+        self.assertTrue(any(state in {"CLAIMED", "RUNNING"} for state in seen))
+        self.assertEqual(self.repository.get_task("TASK-R3-SLOW")["state"], "REVIEW")
+        receipt = json.loads((self.inbox / "TASK-R3-SLOW.json").read_text(encoding="utf-8"))
+        self.assertEqual(receipt["state"], "REVIEW")
+        self.assertTrue(receipt.get("leaseId"))
+        self.assertTrue(receipt.get("originalHash"))
+
+    def test_halt_publishes_final_receipt_without_changing_task(self):
+        self.drop(self.envelope("TASK-R3-HALT", title="Will halt"))
+        first = self.importer.ingest_once()[0]
+        self.assertEqual(first["state"], "READY")
+        self.dispatcher.set_project_baseline("control-panel", "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", "planner")
+        halt = self.root / "halt.json"
+        result = CursorDaemon(
+            CursorRunner(self.dispatcher, "cursor-r2", self.command, timeout_seconds=5),
+            "control-panel", idle_seconds=0, halt_file=halt, reject_limit=3,
+            reporter=self.reporter.report_cycle,
+        ).run()
+        self.assertEqual(result["status"], "halted")
+        after = self.repository.get_task("TASK-R3-HALT")
+        self.assertEqual(after["state"], "READY")
+        self.assertEqual(after["version"], first["taskVersion"])
+        receipt = json.loads((self.inbox / "TASK-R3-HALT.json").read_text(encoding="utf-8"))
+        self.assertEqual(receipt["state"], "READY")
+        self.assertEqual(receipt["originalHash"], first["sourceHash"])
+        self.assertTrue(receipt.get("error"))
+        self.assertFalse(self.marker.exists())
+
+    def test_empty_queue_does_not_rewrite_unrelated_inbox_files(self):
+        self.drop(self.envelope("TASK-R3-IDLE", title="Stable identity"))
+        self.importer.ingest_once()
+        receipt_path = self.inbox / "TASK-R3-IDLE.json"
+        identity_path = self.inbox / "TASK-R3-IDLE.identity.json"
+        decoy = self.inbox / "noise.txt"
+        decoy.write_text("leave me\n", encoding="utf-8")
+        before = {
+            "receipt": receipt_path.stat().st_mtime_ns,
+            "identity": identity_path.stat().st_mtime_ns,
+            "decoy": decoy.stat().st_mtime_ns,
+        }
+        names = sorted(p.name for p in self.inbox.iterdir())
+        updated = self.importer.reporter.publish_identities()
+        self.assertEqual(updated, [])
+        self.assertEqual(sorted(p.name for p in self.inbox.iterdir()), names)
+        self.assertEqual(receipt_path.stat().st_mtime_ns, before["receipt"])
+        self.assertEqual(identity_path.stat().st_mtime_ns, before["identity"])
+        self.assertEqual(decoy.read_text(encoding="utf-8"), "leave me\n")
+        idle = self.importer.cycle()
+        self.assertEqual(idle["published"], [])
+        self.assertEqual(receipt_path.stat().st_mtime_ns, before["receipt"])
+        self.assertFalse(self.marker.exists())
+
+    def test_ingress_and_runner_plist_examples_lint(self):
+        repo = Path(__file__).resolve().parents[1]
+        runner = repo / "scripts" / "com.pojian.chief-cursor-runner.plist.example"
+        ingress = repo / "scripts" / "com.pojian.chief-task-ingress.plist.example"
+        for path in (runner, ingress):
+            checked = subprocess.run(["plutil", "-lint", str(path)], capture_output=True, text=True)
+            self.assertEqual(checked.returncode, 0, checked.stderr)
+            self.assertTrue(plist_keepalive_is_limited(path))
+        arguments = plist_program_arguments(runner)
+        self.assertIn("--inbox-dir", arguments)
+        ingress_args = plist_program_arguments(ingress)
+        self.assertIn("--ingress-config", ingress_args)
+        self.assertIn("--halt-file", ingress_args)
+        self.assertIn("--log-file", ingress_args)
+
+    def test_real_ingress_script_idle_cycle_does_not_start_executor(self):
+        config_path = self.root / "projects.local.json"
+        config_path.write_text(json.dumps({
+            "database": str(self.db),
+            "projects": [{
+                "id": "control-panel", "name": "Panel", "kind": "control_plane", "owner": "Owner",
+                "root": str(self.root), "ledger": "TASKS.md", "status": "STATE.md",
+                "knowledge_roots": [], "enabled_agents": ["knowledge", "observer", "release"],
+            }],
+        }), encoding="utf-8")
+        ingress_config = self.root / "ingress.local.json"
+        ingress_config.write_text(json.dumps({
+            "outboxDir": str(self.outbox.resolve()),
+            "inboxDir": str(self.inbox.resolve()),
+            "allowedProjects": ["control-panel"],
+            "maxBytes": DEFAULT_MAX_BYTES,
+        }), encoding="utf-8")
+        script = Path(__file__).resolve().parents[1] / "scripts" / "run_chief_task_ingress.py"
+        argv = [
+            sys.executable, str(script),
+            "--config", str(config_path),
+            "--ingress-config", str(ingress_config),
+            "--idle-seconds", "0",
+            "--max-cycles", "1",
+            "--log-file", str(self.root / "ingress.log"),
+            "--halt-file", str(self.root / "ingress.halt.json"),
+        ]
+        env = dict(__import__("os").environ)
+        env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
+        completed = subprocess.run(argv, capture_output=True, text=True, env=env, cwd=str(self.root), timeout=20)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertFalse(self.marker.exists())
+        self.assertFalse((self.root / "ingress.halt.json").exists())
 
 
 if __name__ == "__main__":

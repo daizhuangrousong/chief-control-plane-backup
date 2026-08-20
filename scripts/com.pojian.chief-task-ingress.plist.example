@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.pojian.chief-task-ingress</string>
+  <key>WorkingDirectory</key>
+  <string>/absolute/path/to/r3-worktree</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>/absolute/path/to/r3-worktree/scripts/run_chief_task_ingress.py</string>
+    <string>--config</string>
+    <string>/absolute/path/to/r3-worktree/config/projects.cursor-r3.local.json</string>
+    <string>--ingress-config</string>
+    <string>/absolute/path/to/r3-worktree/config/chief-task-ingress.local.json</string>
+    <string>--idle-seconds</string>
+    <string>5</string>
+    <string>--max-cycles</string>
+    <string>0</string>
+    <string>--log-file</string>
+    <string>/absolute/path/to/logs/chief-task-ingress.log</string>
+    <string>--halt-file</string>
+    <string>/absolute/path/to/r3-worktree/var/chief-task-ingress.halt.json</string>
+    <string>--reject-limit</string>
+    <string>3</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PYTHONPATH</key>
+    <string>/absolute/path/to/r3-worktree/src</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>60</integer>
+  <key>Nice</key>
+  <integer>10</integer>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>Umask</key>
+  <integer>63</integer>
+  <key>StandardOutPath</key>
+  <string>/absolute/path/to/logs/chief-task-ingress.launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/absolute/path/to/logs/chief-task-ingress.launchd.err.log</string>
+</dict>
+</plist>
