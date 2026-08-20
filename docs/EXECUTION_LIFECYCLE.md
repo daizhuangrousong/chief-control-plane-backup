@@ -1,31 +1,45 @@
-# Execution lifecycle (R4)
+# Execution lifecycle (R4 / R4.1)
 
-Resident runtime code stays on the Control Plane worktree. Each task gets its own
+Resident runtime code stays on a dedicated Control Plane worktree. Each task gets its own
 `git worktree` and `task/<taskId>` branch created from the Dispatcher-registered
-baseline. The daemon never uses its own checkout as the executor cwd.
+baseline. The daemon never uses its own checkout as the executor cwd, and never
+puts the live project path in the executor payload.
 
 ## Isolation
 
-`TaskWorktreePool` refuses symlinks, dirty reuse, unknown HEAD, and a second
-allocate of the same task (crash restart does not re-execute). The pool path must
-sit inside the authorized project root and must not be the runtime root.
+`TaskWorktreePool` refuses `runtime_root == project_root`, runtime/pool nesting,
+symlinks, dirty reuse, unknown HEAD, unexpected Git toplevels, and a second
+allocate of the same task. Runtime and project must be distinct git worktrees of
+the same repository (`git-common-dir` match, resolved paths). The pool sits
+inside the project root and is gitignored.
+
+When the pool is enabled, `workspaceRoots` sent to the executor is only the leased
+worktree. After the process exits, the runner proves the runtime HEAD, target
+checkout, and registered baseline were not modified.
 
 ## Execution contract
 
 After the injected executor exits 0, the runner requires exactly one commit on the
 leased worktree, a clean tree, `git diff --check` pass, and changed paths inside
-`task.scope`. Failures call `dispatcher.fail` and never merge or promote. Success
-stops at REVIEW with `beforeRef`, `afterRef`, changed paths, tests, and lease/task
-version. The task executor cannot mark DONE, merge, or update baseline.
+`task.scope`. It then atomically persists an `execution-report/1.0.0` under the
+runtime control directory (not the lease tree), binding task/version/lease,
+before/after, changed paths, commit count, diff-check, tests, and acceptance
+checks. Failures call `dispatcher.fail` and never merge or promote. Success
+stops at REVIEW. The task executor cannot mark DONE, merge, update baseline, or
+replace the durable report.
 
 ## Chief review, merger, promoter
 
-Chief writes `chief-review-decision/1.0.0`. Only actor `chief` is valid.
-`TaskMerger` (`merge-r4`) verifies REVIEW, task version, completed lease, matching
-commit, and then fast-forwards the target branch locally. `BaselinePromoter`
-updates Dispatcher baseline only when the target is clean, the merge commit is
-HEAD, there is no active lease, and runtime health passes. Failure keeps the old
-baseline and returns a rollback plan; it does not run the restore command.
+Chief drops `chief-review-decision/1.0.0` into a runtime-side inbox. Caller
+strings such as `actor=chief` or `caller_executor_id=merge-r4` are not identity.
+`TaskMerger.merge(task_id, request_id)` loads that inbox, consumes the decision
+once, and re-runs the Git contract against the occupancy worktree before a local
+fast-forward. Missing, tampered, failed, or empty test evidence fails closed.
+Merger identity comes from instance config and must not appear in
+`allowedExecutors`. `BaselinePromoter` updates Dispatcher baseline only when the
+target is clean, the merge commit is HEAD, there is no active lease, and runtime
+health passes. Failure keeps the old baseline and returns a rollback plan; it
+does not run the restore command.
 
 ## Once-consume receipts
 

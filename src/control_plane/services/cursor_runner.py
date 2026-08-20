@@ -10,9 +10,11 @@ from ..adapters.git import git_at_root
 from ..domain.models import ApprovalClass, ready_requires_owner_approval
 from .dispatcher import BaselineConflictError, LeaseConflictError, LeaseDispatcher
 from .project_isolation import ISOLATED_PROJECT_IDS
-from .execution_contract import ExecutionContractError, inspect_execution
+from .execution_contract import (
+    EXECUTION_REPORT_VERSION, ExecutionContractError, inspect_execution, persist_execution_report,
+)
 from .task_registry import TaskValidationError
-from .task_worktree import TaskWorktreeError, TaskWorktreePool
+from .task_worktree import TaskWorktreeError, TaskWorktreePool, assert_control_path
 
 
 DEFAULT_EXECUTOR_COMMAND = None
@@ -47,6 +49,7 @@ class CursorRunner:
         log: Optional[Callable[[str], None]] = None,
         isolated_project_ids=None,
         worktree_pool: Optional[TaskWorktreePool] = None,
+        execution_report_dir: Optional[Path] = None,
     ):
         if isinstance(executor_command, str) or not executor_command:
             raise CursorAdapterError(
@@ -65,6 +68,15 @@ class CursorRunner:
         )
         self._project_guard = threading.Lock()
         self.worktree_pool = worktree_pool
+        if worktree_pool is not None:
+            if execution_report_dir is None:
+                raise CursorAdapterError("execution report directory is required when a worktree pool is enabled")
+            self.execution_report_dir = assert_control_path(
+                Path(execution_report_dir), "execution report directory",
+                worktree_pool.runtime_root, worktree_pool.project_root, worktree_pool.pool_root,
+            )
+        else:
+            self.execution_report_dir = Path(execution_report_dir).resolve() if execution_report_dir else None
 
     def run_next(self, project_id: Optional[str] = None, request_id: Optional[str] = None) -> Dict[str, Any]:
         request_id = request_id or str(uuid.uuid4())
@@ -109,12 +121,14 @@ class CursorRunner:
             except LeaseConflictError as error:
                 raise CursorAdapterError("duplicate claim rejected: {}".format(error)) from error
         self.dispatcher.heartbeat(lease["lease_id"], self.executor_id, request_id + ":heartbeat")
+        host_snapshot = None
         if self.worktree_pool is not None:
             try:
                 allocated = self.worktree_pool.allocate(task["id"], baseline["baseline_ref"])
+                host_snapshot = self.worktree_pool.snapshot_hosts()
             except TaskWorktreeError as error:
                 return self._fail(lease, baseline["baseline_ref"], request_id, str(error))
-            workspace = Path(allocated["path"])
+            workspace = Path(allocated["path"]).resolve()
             before_ref = allocated["head"]
         try:
             completed = self._invoke(task, lease, workspace)
@@ -134,10 +148,11 @@ class CursorRunner:
             return self._fail(lease, baseline["baseline_ref"], request_id, reason)
         if self.worktree_pool is not None:
             try:
+                self.worktree_pool.assert_hosts_unchanged(host_snapshot, baseline["baseline_ref"])
                 contract_report = inspect_execution(
                     workspace, before_ref, task.get("scope") or [], self.worktree_pool.runtime_root,
                 )
-            except ExecutionContractError as error:
+            except (TaskWorktreeError, ExecutionContractError) as error:
                 return self._fail(lease, baseline["baseline_ref"], request_id, str(error))
             self.worktree_pool.mark_phase(task["id"], "executed")
         try:
@@ -153,11 +168,33 @@ class CursorRunner:
             raise CursorAdapterError("success must enter REVIEW, found {}".format(result.get("task_state")))
         self._emit("completed {} into REVIEW".format(task["id"]))
         if contract_report is not None:
-            result["before_ref"] = contract_report["beforeRef"]
-            result["after_ref"] = contract_report["afterRef"]
-            result["changed_paths"] = contract_report["changedPaths"]
-            result["diff_check"] = contract_report["diffCheck"]
-            result["execution_report"] = contract_report
+            acceptance = [str(item) for item in (task.get("acceptance") or [])]
+            if not acceptance:
+                raise CursorAdapterError("acceptance checks are missing after execution")
+            durable = {
+                "schemaVersion": EXECUTION_REPORT_VERSION,
+                "taskId": task["id"],
+                "taskVersion": result["task_version"],
+                "leaseId": result["lease_id"],
+                "baselineRef": before_ref,
+                "beforeRef": contract_report["beforeRef"],
+                "afterRef": contract_report["afterRef"],
+                "changedPaths": contract_report["changedPaths"],
+                "commitCount": contract_report["commitCount"],
+                "diffCheck": contract_report["diffCheck"],
+                "tests": contract_report["tests"],
+                "acceptanceChecks": [
+                    {"criterion": item, "status": "pass", "evidence": contract_report["afterRef"]}
+                    for item in acceptance
+                ],
+                "worktree": str(workspace),
+            }
+            persist_execution_report(self.execution_report_dir, durable)
+            result["before_ref"] = durable["beforeRef"]
+            result["after_ref"] = durable["afterRef"]
+            result["changed_paths"] = durable["changedPaths"]
+            result["diff_check"] = durable["diffCheck"]
+            result["execution_report"] = durable
         return result
 
     def _assert_safe_to_claim(self, task: Dict[str, Any]) -> None:
@@ -201,7 +238,11 @@ class CursorRunner:
             "objective": task["objective"],
             "scope": task["scope"],
             "acceptance": task["acceptance"],
-            "workspaceRoots": task["workspace_roots"],
+            "workspaceRoots": (
+                [str(Path(workspace).resolve())]
+                if self.worktree_pool is not None
+                else list(task["workspace_roots"])
+            ),
             "approvalClass": task.get("approval_class") or ApprovalClass.NONE.value,
             "ownerApprovalRef": task.get("owner_approval_ref"),
             "leaseId": lease["lease_id"],

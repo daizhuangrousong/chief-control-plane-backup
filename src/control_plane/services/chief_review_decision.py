@@ -1,23 +1,30 @@
-"""Chief-authored review decisions. Executors cannot write or self-approve these."""
+"""Chief-authored review decisions. Identity comes from the inbox file, not caller strings."""
 
 from __future__ import annotations
 
+import hashlib
+import json
+import os
+import tempfile
+from pathlib import Path
 from typing import Any, Dict, Set
 
-from .task_registry import TaskValidationError, _required_text
+from .task_registry import TASK_ID_PATTERN, TaskValidationError, _required_text
 
 
 DECISION_VERSION = "chief-review-decision/1.0.0"
 DECISION_FIELDS = {"schemaVersion", "taskId", "taskVersion", "commitRef", "leaseId", "outcome", "actor", "reasons"}
 OUTCOMES = {"approve_merge", "reject"}
 CHIEF_ACTORS = {"chief"}
+CONSUMED_VERSION = "chief-review-consumed/1.0.0"
 
 
 class ChiefReviewDecisionError(TaskValidationError):
     pass
 
 
-def parse_review_decision(payload: Any, allowed_actors: Set[str] = CHIEF_ACTORS) -> Dict[str, Any]:
+def parse_review_decision(payload: Any, allowed_actors: Set[str] = None) -> Dict[str, Any]:
+    allowed_actors = allowed_actors or CHIEF_ACTORS
     if not isinstance(payload, dict):
         raise ChiefReviewDecisionError("review decision must be an object")
     unknown = sorted(set(payload) - DECISION_FIELDS)
@@ -50,3 +57,71 @@ def parse_review_decision(payload: Any, allowed_actors: Set[str] = CHIEF_ACTORS)
         "actor": actor,
         "reasons": [str(item).strip() for item in reasons],
     }
+
+
+def _atomic_write_json(path: Path, payload: Dict[str, Any]) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=".chief-review-", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+class ChiefReviewInbox:
+    """Chief-only review inbox. Must sit on the runtime control side, never a task tree."""
+
+    def __init__(self, path: Path, runtime_root: Path, project_root: Path, pool_root: Path):
+        from .task_worktree import assert_control_path
+
+        self.path = assert_control_path(
+            Path(path), "chief review inbox", runtime_root, project_root, pool_root,
+        )
+
+    def decision_path(self, task_id: str) -> Path:
+        return self.path / "{}.json".format(task_id)
+
+    def consumed_path(self, task_id: str) -> Path:
+        return self.path / "{}.consumed.json".format(task_id)
+
+    def drop(self, decision: Dict[str, Any]) -> Path:
+        parsed = parse_review_decision(decision)
+        path = self.decision_path(parsed["taskId"])
+        _atomic_write_json(path, parsed)
+        return path
+
+    def load(self, task_id: str) -> Dict[str, Any]:
+        if not TASK_ID_PATTERN.fullmatch(task_id or ""):
+            raise ChiefReviewDecisionError("task id is invalid")
+        if self.consumed_path(task_id).exists():
+            raise ChiefReviewDecisionError("review decision already consumed")
+        path = self.decision_path(task_id)
+        if path.is_symlink() or not path.is_file():
+            raise ChiefReviewDecisionError("review decision is missing from the Chief inbox")
+        try:
+            raw = path.read_bytes()
+            payload = json.loads(raw.decode("utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ChiefReviewDecisionError("review decision is unreadable") from error
+        parsed = parse_review_decision(payload)
+        if parsed["taskId"] != task_id:
+            raise ChiefReviewDecisionError("review decision taskId mismatch")
+        parsed["sourceHash"] = hashlib.sha256(raw).hexdigest()
+        return parsed
+
+    def consume(self, task_id: str, source_hash: str) -> None:
+        parsed = self.load(task_id)
+        if parsed.get("sourceHash") != source_hash:
+            raise ChiefReviewDecisionError("review decision changed before consume")
+        _atomic_write_json(self.consumed_path(task_id), {
+            "schemaVersion": CONSUMED_VERSION,
+            "taskId": task_id,
+            "sourceHash": source_hash,
+        })

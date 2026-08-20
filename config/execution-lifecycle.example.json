@@ -2,6 +2,8 @@
   "runtimeRoot": "/absolute/path/to/r4-runtime-worktree",
   "projectRoot": "/absolute/path/to/control-panel",
   "taskWorktreePool": "/absolute/path/to/control-panel/var/task-worktrees",
+  "chiefReviewInbox": "/absolute/path/to/r4-runtime-worktree/chief-review-inbox",
+  "executionReportDir": "/absolute/path/to/r4-runtime-worktree/var/execution-reports",
   "targetBranch": "main",
   "mergerId": "merge-r4",
   "allowedReviewActors": ["chief"]

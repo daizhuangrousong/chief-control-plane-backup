@@ -9,11 +9,12 @@ from typing import Any, Dict, Optional, Set
 from ..adapters.git import GitError, git_checked
 from ..domain.models import TaskState
 from ..storage.repository import Repository
-from .chief_review_decision import parse_review_decision
+from .chief_review_decision import ChiefReviewDecisionError, ChiefReviewInbox
 from .chief_task_ingress import atomic_write_json
 from .dispatcher import LeaseDispatcher
-from .task_registry import TaskValidationError
-from .task_worktree import TaskWorktreePool
+from .execution_contract import ExecutionContractError, load_execution_report, revalidate_execution_report
+from .task_registry import TASK_ID_PATTERN, TaskValidationError
+from .task_worktree import TaskWorktreePool, assert_control_path
 
 
 class TaskMergeError(TaskValidationError):
@@ -27,6 +28,8 @@ class TaskMerger:
         dispatcher: LeaseDispatcher,
         project_root: Path,
         pool: TaskWorktreePool,
+        review_inbox: ChiefReviewInbox,
+        execution_report_dir: Path,
         executor_id: str = "merge-r4",
         target_branch: str = "main",
         allowed_review_actors: Set[str] = None,
@@ -34,24 +37,36 @@ class TaskMerger:
     ):
         self.repository = repository
         self.dispatcher = dispatcher
-        self.project_root = Path(project_root)
+        self.project_root = Path(project_root).resolve()
         self.pool = pool
+        self.review_inbox = review_inbox
+        self.execution_report_dir = assert_control_path(
+            Path(execution_report_dir), "execution report directory",
+            pool.runtime_root, pool.project_root, pool.pool_root,
+        )
         self.executor_id = executor_id
         self.target_branch = target_branch
         self.allowed_review_actors = allowed_review_actors or {"chief"}
         self.receipt_dir = Path(receipt_dir) if receipt_dir else None
 
-    def merge(self, decision_payload: Dict[str, Any], caller_executor_id: str, request_id: str) -> Dict[str, Any]:
-        if caller_executor_id != self.executor_id:
-            raise TaskMergeError("task executor cannot merge its own work")
-        decision = parse_review_decision(decision_payload, self.allowed_review_actors)
-        if decision["outcome"] != "approve_merge":
-            raise TaskMergeError("review decision did not approve a merge")
-        existing = self._receipt(decision["taskId"])
+    def merge(self, task_id: str, request_id: str) -> Dict[str, Any]:
+        if not isinstance(task_id, str) or not TASK_ID_PATTERN.fullmatch(task_id):
+            raise TaskMergeError("merge requires a task id from the Chief inbox, not a caller-supplied decision")
+        if not isinstance(request_id, str) or not request_id.strip():
+            raise TaskMergeError("request id is required")
+        existing = self._receipt(task_id)
         if existing is not None:
-            if existing.get("requestId") == request_id and existing.get("commitRef") == decision["commitRef"]:
+            if existing.get("requestId") == request_id:
                 return existing
             raise TaskMergeError("duplicate review/merge is not allowed")
+        try:
+            decision = self.review_inbox.load(task_id)
+        except ChiefReviewDecisionError as error:
+            raise TaskMergeError(str(error)) from error
+        if decision["actor"] not in self.allowed_review_actors:
+            raise TaskMergeError("review decision actor is not authorized")
+        if decision["outcome"] != "approve_merge":
+            raise TaskMergeError("review decision did not approve a merge")
         task = self.repository.get_task(decision["taskId"])
         if task is None:
             raise TaskMergeError("task is not registered")
@@ -64,6 +79,7 @@ class TaskMerger:
         occupancy = self.pool.read_occupancy(task["id"])
         if occupancy is None:
             raise TaskMergeError("task worktree occupancy is missing")
+        worktree = Path(occupancy["path"]).resolve()
         branch = occupancy["branch"]
         try:
             branch_head = git_checked(self.project_root, "rev-parse", branch)
@@ -78,12 +94,32 @@ class TaskMerger:
             raise TaskMergeError("merge requires a completed lease")
         if self.dispatcher.active_lease_for_project(task["project_id"]):
             raise TaskMergeError("project still has an active execution")
+        try:
+            report = load_execution_report(self.execution_report_dir, task["id"])
+            revalidate_execution_report(
+                report,
+                worktree,
+                self.pool.runtime_root,
+                task.get("scope") or [],
+                task["id"],
+                int(task["version"]),
+                lease["id"],
+                decision["commitRef"],
+                task.get("acceptance") or [],
+                occupancy.get("baselineRef") or lease["baseline_ref"],
+            )
+        except ExecutionContractError as error:
+            raise TaskMergeError(str(error)) from error
         current = git_checked(self.project_root, "rev-parse", "--abbrev-ref", "HEAD")
         if current != self.target_branch:
             raise TaskMergeError("project HEAD is not the merge target branch")
         porcelain = git_checked(self.project_root, "status", "--porcelain")
         if porcelain:
             raise TaskMergeError("target branch is dirty")
+        try:
+            self.review_inbox.consume(task_id, decision["sourceHash"])
+        except ChiefReviewDecisionError as error:
+            raise TaskMergeError(str(error)) from error
         try:
             git_checked(self.project_root, "merge", "--ff-only", branch)
         except GitError as error:
