@@ -15,16 +15,17 @@
     <string>--executor-id</string>
     <string>cursor-r1</string>
     <string>--executor-command</string>
-    <string>/usr/bin/python3</string>
-    <string>/absolute/path/to/r1-worktree/scripts/cursor_cli_wrapper.py</string>
-    <string>--runner-config</string>
-    <string>/absolute/path/to/r1-worktree/config/cursor-runner.local.json</string>
+    <string>["/usr/bin/python3","/absolute/path/to/r1-worktree/scripts/cursor_cli_wrapper.py","--runner-config","/absolute/path/to/r1-worktree/config/cursor-runner.local.json"]</string>
     <string>--project</string>
     <string>control-panel</string>
     <string>--idle-seconds</string>
     <string>30</string>
     <string>--log-file</string>
     <string>/absolute/path/to/logs/chief-cursor-runner.log</string>
+    <string>--halt-file</string>
+    <string>/absolute/path/to/r1-worktree/var/cursor-runner.halt.json</string>
+    <string>--reject-limit</string>
+    <string>3</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
@@ -34,7 +35,10 @@
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
-  <true/>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
   <key>ThrottleInterval</key>
   <integer>60</integer>
   <key>Nice</key>

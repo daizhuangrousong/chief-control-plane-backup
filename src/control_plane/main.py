@@ -8,10 +8,11 @@ from .api.server import serve
 from .config import ProjectConfig, load_settings
 from .domain.models import AgentType, DecisionOutcome, TaskState
 from .services import (
-    ChiefIntakeService, CursorAdapterError, CursorDaemon, CursorDaemonError, CursorRunner,
-    DecisionPolicyEngine, ExecutorReportService, LeaseDispatcher, Orchestrator, ReviewGate,
-    TaskRegistry, completion_evidence_from_dict, content_intake_from_dict, decision_facts_from_dict,
-    executor_report_from_dict, redact_secrets, task_from_dict,
+    ChiefIntakeService, CursorAdapterError, CursorDaemon, CursorDaemonError, CursorLaunchError,
+    CursorRunner, DecisionPolicyEngine, ExecutorReportService, LeaseDispatcher, Orchestrator,
+    ReviewGate, TaskRegistry, completion_evidence_from_dict, content_intake_from_dict,
+    decision_facts_from_dict, executor_report_from_dict, parse_executor_command, redact_secrets,
+    task_from_dict,
 )
 from .storage import Repository
 
@@ -140,16 +141,18 @@ def build_parser() -> argparse.ArgumentParser:
             finish.add_argument("--reason", required=True)
     cursor_run = subcommands.add_parser("cursor-run")
     cursor_run.add_argument("--executor-id", required=True)
-    cursor_run.add_argument("--executor-command", required=True, nargs="+")
+    cursor_run.add_argument("--executor-command", required=True, help="JSON array of absolute argv")
     cursor_run.add_argument("--project")
     cursor_run.add_argument("--timeout", type=int, default=300)
     cursor_run.add_argument("--request-id")
     cursor_daemon = subcommands.add_parser("cursor-daemon")
     cursor_daemon.add_argument("--executor-id", required=True)
-    cursor_daemon.add_argument("--executor-command", required=True, nargs="+")
+    cursor_daemon.add_argument("--executor-command", required=True, help="JSON array of absolute argv")
     cursor_daemon.add_argument("--project", required=True)
     cursor_daemon.add_argument("--timeout", type=int, default=300)
     cursor_daemon.add_argument("--idle-seconds", type=int, default=30)
+    cursor_daemon.add_argument("--halt-file", required=True)
+    cursor_daemon.add_argument("--reject-limit", type=int, default=3)
     cursor_daemon.add_argument("--max-cycles", type=int, default=0)
     return parser
 
@@ -272,15 +275,16 @@ def main(argv=None) -> int:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
     if args.command == "cursor-run":
-        runner = CursorRunner(
-            LeaseDispatcher(repository),
-            executor_id=args.executor_id,
-            executor_command=args.executor_command,
-            timeout_seconds=args.timeout,
-        )
         try:
+            command = parse_executor_command(args.executor_command)
+            runner = CursorRunner(
+                LeaseDispatcher(repository),
+                executor_id=args.executor_id,
+                executor_command=command,
+                timeout_seconds=args.timeout,
+            )
             result = runner.run_next(args.project, args.request_id)
-        except CursorAdapterError as error:
+        except (CursorAdapterError, CursorLaunchError) as error:
             print(json.dumps({"status": "rejected", "error": str(error)}, ensure_ascii=False, indent=2))
             return 2
         print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -290,19 +294,22 @@ def main(argv=None) -> int:
             print(redact_secrets(message), flush=True)
 
         try:
+            command = parse_executor_command(args.executor_command)
             daemon = CursorDaemon(
                 CursorRunner(
                     LeaseDispatcher(repository),
                     executor_id=args.executor_id,
-                    executor_command=args.executor_command,
+                    executor_command=command,
                     timeout_seconds=args.timeout,
                     log=emit,
                 ),
                 project_id=args.project,
                 idle_seconds=args.idle_seconds,
                 log=emit,
+                halt_file=Path(args.halt_file),
+                reject_limit=args.reject_limit,
             )
-        except (CursorAdapterError, CursorDaemonError) as error:
+        except (CursorAdapterError, CursorDaemonError, CursorLaunchError) as error:
             print(json.dumps({"status": "rejected", "error": str(error)}, ensure_ascii=False, indent=2))
             return 2
         result = daemon.run(args.max_cycles)

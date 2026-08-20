@@ -1,14 +1,14 @@
-# PROGRESS · CURSOR-RUNNER R1 BOOTSTRAP
+# PROGRESS · CURSOR-RUNNER R1.1 FIX
 
-- 目标：接入官方 Cursor CLI，完成一次低风险真实试跑，验证飞书出站，通过后建立仅面向 Control Plane 的本机常驻 Runner。停在 Chief REVIEW。
+- 目标：补正 CLI 最小环境、无歧义启动参数、有限重启/熔断；完成原授权 1 次真实 pilot。停在 Chief REVIEW。
 - Owner approval：`OWNER-APPROVAL-20260820-CURSOR-R1-BOOTSTRAP`
 - 工作树：`/Users/pojian/repos/director-control-plane-r1-bootstrap` 分支 `cursor-runner-r1-bootstrap`
-- 阶段：代码与反向门禁完成；真实 pilot 与飞书出站独立 BLOCKED；LaunchAgent 未启用；待 Chief REVIEW
-- 任务 0：91 tests / 0 fail / 0 skip；HEAD=R0 `fe5062fa75691ba366d209aac1f927f0e29ad643`
-- 最终测试：103 tests / 0 fail / 0 skip；`git diff --check` 通过
-- 真实 Cursor `--print` 调用次数：0
-- 飞书测试卡：0
-- LaunchAgent label：未启用（模板 `com.pojian.chief-cursor-runner`）
-- 日志路径：未启用（预定 `var/logs/chief-cursor-runner.log`）
-- Pilot task/lease/review id：无（未发起真实调用）
-- 最大风险：在未认证时误发 `--print` 或把凭据写入 plist。已 fail closed。
+- 任务 0：HEAD=`549cce7`；103 tests / 0 fail / 0 skip
+- 最终测试：108 tests / 0 fail / 0 skip；`git diff --check` 通过；plist lint 通过
+- 真实 Cursor `--print` 调用次数：1
+- Pilot：`TASK-R1-PILOT` lease `6ac024e6-1ee4-4f7f-928c-a2d45d46b8af` state `REVIEW`
+- 飞书测试卡：0（独立 BLOCKED）
+- LaunchAgent label：`com.pojian.chief-cursor-runner`（commit 后启用并做 idle 证明）
+- 日志路径：`var/logs/chief-cursor-runner.log`
+- 阶段：代码补正与真实 pilot 完成；待原子 commit 与常驻 idle 证明
+- 最大风险：LaunchAgent 启用后非 idle 调用 Cursor。启用前确认 READY 为空。

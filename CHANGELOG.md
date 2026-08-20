@@ -6,6 +6,7 @@
 
 - Added an explicit stdin wrapper that validates the R0 JSON payload and invokes the official Cursor CLI from an injected absolute `cliPath`.
 - Added `cursor-daemon`: one Control Plane project, one task at a time, idle when the queue is empty, rotating logs, no credential files.
+- CLI subprocesses receive a filtered env allowlist; `--executor-command` is a JSON argv array; identical permanent rejections halt for Chief.
 - Missing CLI authentication, timeout and non-zero exits fail closed. LaunchAgent remains disabled until the authorized real pilot passes.
 
 ### R0 — Isolated Cursor Adapter

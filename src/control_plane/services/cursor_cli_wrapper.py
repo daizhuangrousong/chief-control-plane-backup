@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from ..domain.models import ApprovalClass, ready_requires_owner_approval
 from .cursor_runner import CursorAdapterError, redact_secrets
+from .cursor_launch import filter_cli_env
 
 
 REQUIRED_FIELDS = (
@@ -106,14 +107,14 @@ def assert_workspace(payload: Dict[str, Any]) -> Path:
 
 
 def cli_is_authenticated(cli_path: str, env: Optional[Mapping[str, str]] = None) -> bool:
-    environment = env if env is not None else os.environ
+    environment = filter_cli_env(env)
     if str(environment.get("CURSOR_API_KEY") or "").strip():
         return True
     try:
         completed = subprocess.run(
             [cli_path, "status", "--format", "json"],
             capture_output=True, text=True, timeout=30, check=False, shell=False,
-            env=dict(environment),
+            env=environment,
         )
     except OSError:
         return False
@@ -149,8 +150,8 @@ def invoke_cursor_cli(
     if payload["projectId"] not in config["projectAllowlist"]:
         raise CursorCliWrapperError("project is not in the runner allowlist")
     workspace = assert_workspace(payload)
-    environment = env if env is not None else os.environ
-    if not cli_is_authenticated(config["cliPath"], environment):
+    child_env = filter_cli_env(env)
+    if not cli_is_authenticated(config["cliPath"], env):
         raise CursorCliWrapperError("Cursor CLI is not authenticated; refusing to start")
     command = build_cli_command(config["cliPath"], workspace, payload)
     return subprocess.run(
@@ -161,7 +162,7 @@ def invoke_cursor_cli(
         cwd=str(workspace),
         check=False,
         shell=False,
-        env=dict(environment),
+        env=child_env,
     )
 
 

@@ -4,19 +4,22 @@ Owner approval: `OWNER-APPROVAL-20260820-CURSOR-R1-BOOTSTRAP`
 Worktree: `/Users/pojian/repos/director-control-plane-r1-bootstrap`
 Branch: `cursor-runner-r1-bootstrap`
 R0 baseline: `fe5062fa75691ba366d209aac1f927f0e29ad643`
+R1 commit: `549cce7ed04f6daff6a82f2d6782a1e4d338cb91`
+Chief verdict on R1: `CHANGES_REQUESTED_R1`
 
-## Task 0
+## Task 0 (R1.1)
 
-- Main tree HEAD matched R0. Dirty Chief files were left untouched.
-- Tests: 91 / 0 fail / 0 skip
-- `agent` / `cursor-agent` were missing; official CLI `2026.08.11-e8db854` was installed to `~/.local/bin/agent`
-- Headless invocation: `agent --print --force --trust --sandbox enabled --output-format json --workspace <root> <prompt>`
-- `agent status --format json` → `isAuthenticated=false`; `CURSOR_API_KEY` unset
-- No cursor-runner LaunchAgent was present
+- HEAD=`549cce7ed04f6daff6a82f2d6782a1e4d338cb91`; worktree was clean
+- Tests: 103 / 0 fail / 0 skip
+- Real `--print` count before this fix: 0
 
-## Reverse gates (executor never started)
+## R1.1 code contract
 
-Fake executor marker stayed absent.
+- CLI `status`/`--print` env is an allowlist; canary `FEISHU_APP_SECRET` / token / unrelated keys do not enter the child
+- `--executor-command` is a JSON argv array; plist `plutil -lint` OK; KeepAlive is `SuccessfulExit=false`
+- Identical permanent rejections halt after 3 cycles, write a halt file, and a restart stays stopped
+
+## Reverse gates (from R1, executor never started)
 
 ```json
 {"status": "rejected", "error": "workspace is outside the authorized project root: /private/tmp"}
@@ -30,20 +33,27 @@ Fake executor marker stayed absent.
 {"status": "rejected", "error": "ownerApprovalRef is required for database_write tasks"}
 ```
 
-After those three tasks were moved to BLOCKED, `cursor-daemon --max-cycles 1` returned idle and still did not create the marker.
-
 ## Real Cursor `--print` call
 
-Count: **0**. See `BLOCKED.md`. The wrapper fail-closes on missing authentication and does not start `--print`.
+Count: **1** (authorized maximum).
+
+- task: `TASK-R1-PILOT`
+- lease: `6ac024e6-1ee4-4f7f-928c-a2d45d46b8af`
+- state: `REVIEW` version 5
+- artifact: `reports/CURSOR_RUNNER_R1_PILOT_2026-08-20.md`
+- git: only that path was newly added versus the pre-call snapshot
 
 ## Feishu outbound
 
-Independent BLOCKED. Private `config/feishu-control.local.json` exists; `FEISHU_APP_ID` and `FEISHU_APP_SECRET` are unset. No test card was sent.
+Independent BLOCKED. No test card. message id: none.
 
 ## LaunchAgent
 
-Not enabled. Label would be `com.pojian.chief-cursor-runner`. Logs would be `/Users/pojian/repos/director-control-plane-r1-bootstrap/var/logs/chief-cursor-runner.log`.
+Label: `com.pojian.chief-cursor-runner`
+Log: `/Users/pojian/repos/director-control-plane-r1-bootstrap/var/logs/chief-cursor-runner.log`
+Halt file: `/Users/pojian/repos/director-control-plane-r1-bootstrap/var/cursor-runner.halt.json`
+Enabled only after the R1.1 commit if idle proof succeeds.
 
 ## Final tests
 
-103 / 0 fail / 0 skip. `git diff --check` passed.
+108 / 0 fail / 0 skip. `git diff --check` passed. `plutil -lint` passed.
