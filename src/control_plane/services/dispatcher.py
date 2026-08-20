@@ -86,6 +86,19 @@ class LeaseDispatcher:
             raise BaselineConflictError("project baseline is not registered")
         return dict(row)
 
+    def active_lease_for_project(self, project_id: str) -> Optional[Dict[str, Any]]:
+        with self.repository.connect(timeout=1.0) as connection:
+            row = connection.execute(
+                """SELECT task_lease.id AS lease_id, task_lease.task_id, task_lease.executor_id,
+                          task_lease.status, control_task.project_id
+                   FROM task_lease
+                   JOIN control_task ON control_task.id = task_lease.task_id
+                   WHERE task_lease.status = 'active' AND control_task.project_id = ?
+                   ORDER BY task_lease.created_at LIMIT 1""",
+                (project_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
     def next(self, executor_id: str, project_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         now = self._now()
         with self.repository.connect(timeout=1.0) as connection:
@@ -303,6 +316,9 @@ class LeaseDispatcher:
         record["workspace_roots"] = json.loads(record.pop("workspace_roots_json"))
         record["scope"] = json.loads(record.pop("scope_json"))
         record["acceptance"] = json.loads(record.pop("acceptance_json"))
+        record["approval_class"] = record.get("approval_class") or "none"
+        if not record.get("owner_approval_ref"):
+            record["owner_approval_ref"] = None
         return record
 
     def _transition(self, connection: sqlite3.Connection, task_id: str, from_state: str, to_state: str,

@@ -7,7 +7,10 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from ..config import ProjectConfig
-from ..domain.models import Check, ControlTask, DecisionOutcome, Finding, KnowledgeCandidate, RunStatus, TaskState
+from ..domain.models import (
+    ApprovalClass, Check, ControlTask, DecisionOutcome, Finding, KnowledgeCandidate,
+    RunStatus, TaskState, ready_requires_owner_approval,
+)
 
 
 def utc_now() -> str:
@@ -58,6 +61,15 @@ class Repository:
             }
             if "commit_ref" not in review_columns:
                 connection.execute("ALTER TABLE task_review ADD COLUMN commit_ref TEXT")
+            task_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(control_task)").fetchall()
+            }
+            if "approval_class" not in task_columns:
+                connection.execute(
+                    "ALTER TABLE control_task ADD COLUMN approval_class TEXT NOT NULL DEFAULT 'none'"
+                )
+            if "owner_approval_ref" not in task_columns:
+                connection.execute("ALTER TABLE control_task ADD COLUMN owner_approval_ref TEXT")
             connection.execute("DROP INDEX IF EXISTS idx_task_review_done_commit")
             connection.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_task_review_done_commit "
@@ -200,12 +212,13 @@ class Repository:
                     """INSERT INTO control_task
                        (id, project_id, title, objective, scope_json, acceptance_json, priority, state,
                         version, risk_level, allowed_executors_json, workspace_roots_json, source_uri,
-                        source_fingerprint, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)""",
+                        approval_class, owner_approval_ref, source_fingerprint, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (task.id, task.project_id, task.title, task.objective, json_text(task.scope),
                      json_text(task.acceptance), task.priority.value, TaskState.DRAFT.value,
                      task.risk_level.value, json_text(task.allowed_executors), json_text(task.workspace_roots),
-                     task.source_uri, source_fingerprint, now, now),
+                     task.source_uri, task.approval_class.value, task.owner_approval_ref,
+                     source_fingerprint, now, now),
                 )
                 for dependency_id in dependencies:
                     connection.execute(
@@ -254,6 +267,12 @@ class Repository:
                 if blocked:
                     details = ", ".join("{}={}".format(item["id"], item["state"]) for item in blocked)
                     raise TaskDependencyBlockedError("dependencies are not DONE: {}".format(details))
+                if ready_requires_owner_approval(current["approval_class"], current["owner_approval_ref"]):
+                    raise TaskVersionConflictError(
+                        "ownerApprovalRef is required before READY for approvalClass={}".format(
+                            current["approval_class"]
+                        )
+                    )
             result_version = expected_version + 1
             result = connection.execute(
                 """UPDATE control_task SET state = ?, version = ?, updated_at = ?
@@ -304,7 +323,10 @@ class Repository:
         result_version = expected_version + 1
         decision_id = str(uuid.uuid4())
         with self.connect() as connection:
-            current = connection.execute("SELECT state, version FROM control_task WHERE id = ?", (task_id,)).fetchone()
+            current = connection.execute(
+                "SELECT state, version, approval_class, owner_approval_ref FROM control_task WHERE id = ?",
+                (task_id,),
+            ).fetchone()
             if not current:
                 raise TaskNotFoundError("task is not registered: {}".format(task_id))
             if current["state"] != from_state.value or int(current["version"]) != expected_version:
@@ -325,6 +347,12 @@ class Repository:
                 if blocked:
                     details = ", ".join("{}={}".format(item["id"], item["state"]) for item in blocked)
                     raise TaskDependencyBlockedError("dependencies are not DONE: {}".format(details))
+                if ready_requires_owner_approval(current["approval_class"], current["owner_approval_ref"]):
+                    raise TaskVersionConflictError(
+                        "ownerApprovalRef is required before READY for approvalClass={}".format(
+                            current["approval_class"]
+                        )
+                    )
             result = connection.execute(
                 """UPDATE control_task SET state = ?, version = ?, updated_at = ?
                    WHERE id = ? AND state = ? AND version = ?""",
@@ -556,12 +584,12 @@ class Repository:
                     """INSERT INTO control_task
                        (id, project_id, title, objective, scope_json, acceptance_json, priority, state,
                         version, risk_level, allowed_executors_json, workspace_roots_json, source_uri,
-                        source_fingerprint, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, 'DRAFT', 1, ?, ?, ?, ?, ?, ?, ?)""",
+                        approval_class, owner_approval_ref, source_fingerprint, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, 'DRAFT', 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (task.id, task.project_id, task.title, task.objective, json_text(task.scope),
                      json_text(task.acceptance), task.priority.value, task.risk_level.value,
                      json_text(task.allowed_executors), json_text(task.workspace_roots), task.source_uri,
-                     task_fingerprint, now, now),
+                     task.approval_class.value, task.owner_approval_ref, task_fingerprint, now, now),
                 )
                 connection.execute(
                     """INSERT INTO control_task_transition
@@ -913,6 +941,9 @@ class Repository:
             (record["id"],),
         ).fetchall()
         record["dependencies"] = [item["depends_on_task_id"] for item in dependencies]
+        record["approval_class"] = record.get("approval_class") or ApprovalClass.NONE.value
+        if not record.get("owner_approval_ref"):
+            record["owner_approval_ref"] = None
         return record
 
     def list_rows(self, table: str, limit: int = 100) -> List[Dict[str, Any]]:

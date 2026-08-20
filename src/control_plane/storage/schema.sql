@@ -114,6 +114,8 @@ CREATE TABLE IF NOT EXISTS control_task (
   allowed_executors_json TEXT NOT NULL,
   workspace_roots_json TEXT NOT NULL,
   source_uri TEXT,
+  approval_class TEXT NOT NULL DEFAULT 'none' CHECK(approval_class IN ('none', 'knowledge_write', 'database_write', 'direction', 'acceptance_change')),
+  owner_approval_ref TEXT,
   source_fingerprint TEXT NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,

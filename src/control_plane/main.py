@@ -8,9 +8,9 @@ from .api.server import serve
 from .config import ProjectConfig, load_settings
 from .domain.models import AgentType, DecisionOutcome, TaskState
 from .services import (
-    ChiefIntakeService, DecisionPolicyEngine, ExecutorReportService, LeaseDispatcher, Orchestrator,
-    ReviewGate, TaskRegistry, completion_evidence_from_dict, content_intake_from_dict,
-    decision_facts_from_dict, executor_report_from_dict, task_from_dict,
+    ChiefIntakeService, CursorAdapterError, CursorRunner, DecisionPolicyEngine, ExecutorReportService,
+    LeaseDispatcher, Orchestrator, ReviewGate, TaskRegistry, completion_evidence_from_dict,
+    content_intake_from_dict, decision_facts_from_dict, executor_report_from_dict, task_from_dict,
 )
 from .storage import Repository
 
@@ -137,6 +137,12 @@ def build_parser() -> argparse.ArgumentParser:
         finish.add_argument("--request-id", required=True)
         if command_name == "fail":
             finish.add_argument("--reason", required=True)
+    cursor_run = subcommands.add_parser("cursor-run")
+    cursor_run.add_argument("--executor-id", required=True)
+    cursor_run.add_argument("--executor-command", required=True, nargs="+")
+    cursor_run.add_argument("--project")
+    cursor_run.add_argument("--timeout", type=int, default=300)
+    cursor_run.add_argument("--request-id")
     return parser
 
 
@@ -255,6 +261,20 @@ def main(argv=None) -> int:
         else:
             result = dispatcher.fail(args.lease_id, args.executor_id, args.baseline_ref,
                                      args.request_id, args.reason)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+    if args.command == "cursor-run":
+        runner = CursorRunner(
+            LeaseDispatcher(repository),
+            executor_id=args.executor_id,
+            executor_command=args.executor_command,
+            timeout_seconds=args.timeout,
+        )
+        try:
+            result = runner.run_next(args.project, args.request_id)
+        except CursorAdapterError as error:
+            print(json.dumps({"status": "rejected", "error": str(error)}, ensure_ascii=False, indent=2))
+            return 2
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
     orchestrator = Orchestrator(repository)

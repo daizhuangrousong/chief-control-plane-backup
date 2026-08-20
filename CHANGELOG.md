@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### R0 — Isolated Cursor Adapter
+
+- Added machine-checked `approvalClass` (`none | knowledge_write | database_write | direction | acceptance_change`); non-`none` tasks cannot become READY without `ownerApprovalRef`.
+- Unknown task fields and spoofed approval keys are rejected; legacy tasks default to `none`.
+- Added `CursorRunner`: injected executor command only, LeaseDispatcher claim, workspace/baseline/version checks, stdin task payload, timeout/non-zero `fail`, success stops at REVIEW, secret redaction, one active execution per project.
+- Production default refuses to discover or start Cursor. Julius isolation and dispatcher gates are unchanged.
+
 ### TASK-029 — Chief Content Intake
 
 - Added a Julius content intake contract for `knowledge_ingest` and `candidate_research` with source, subject and target-stage normalization.

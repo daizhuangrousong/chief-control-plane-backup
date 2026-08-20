@@ -43,6 +43,22 @@ class TaskRisk(str, Enum):
     CRITICAL = "critical"
 
 
+class ApprovalClass(str, Enum):
+    NONE = "none"
+    KNOWLEDGE_WRITE = "knowledge_write"
+    DATABASE_WRITE = "database_write"
+    DIRECTION = "direction"
+    ACCEPTANCE_CHANGE = "acceptance_change"
+
+
+def ready_requires_owner_approval(approval_class: str, owner_approval_ref: Optional[str]) -> bool:
+    try:
+        classified = ApprovalClass(approval_class or ApprovalClass.NONE.value)
+    except ValueError:
+        return True
+    return classified is not ApprovalClass.NONE and not str(owner_approval_ref or "").strip()
+
+
 class DecisionOutcome(str, Enum):
     READY = "READY"
     NEEDS_DECISION = "NEEDS_DECISION"
@@ -80,6 +96,8 @@ class ControlTask:
     workspace_roots: List[str]
     dependencies: List[str] = field(default_factory=list)
     source_uri: Optional[str] = None
+    approval_class: ApprovalClass = ApprovalClass.NONE
+    owner_approval_ref: Optional[str] = None
 
 
 @dataclass(frozen=True)

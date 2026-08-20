@@ -1,3 +1,10 @@
-from .models import AgentType, ControlTask, DecisionFacts, DecisionOutcome, Finding, RunStatus, TaskPriority, TaskRisk, TaskState
+from .models import (
+    AgentType, ApprovalClass, ControlTask, DecisionFacts, DecisionOutcome, Finding,
+    RunStatus, TaskPriority, TaskRisk, TaskState, ready_requires_owner_approval,
+)
 
-__all__ = ["AgentType", "ControlTask", "DecisionFacts", "DecisionOutcome", "Finding", "RunStatus", "TaskPriority", "TaskRisk", "TaskState"]
+__all__ = [
+    "AgentType", "ApprovalClass", "ControlTask", "DecisionFacts", "DecisionOutcome",
+    "Finding", "RunStatus", "TaskPriority", "TaskRisk", "TaskState",
+    "ready_requires_owner_approval",
+]

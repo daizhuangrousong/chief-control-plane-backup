@@ -22,5 +22,6 @@
     "/absolute/path/to/approved/worktree"
   ],
   "dependencies": [],
-  "sourceUri": "docs/control-plane/TASK_QUEUE.md#task-015"
+  "sourceUri": "docs/control-plane/TASK_QUEUE.md#task-015",
+  "approvalClass": "none"
 }

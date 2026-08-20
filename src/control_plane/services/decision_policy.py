@@ -3,7 +3,7 @@ import json
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..domain.models import DecisionFacts, DecisionOutcome, TaskRisk, TaskState
+from ..domain.models import DecisionFacts, DecisionOutcome, TaskRisk, TaskState, ready_requires_owner_approval
 from ..storage.repository import Repository, TaskNotFoundError, TaskVersionConflictError
 from .task_registry import TaskValidationError, _required_text
 
@@ -104,6 +104,8 @@ class DecisionPolicyEngine:
                 "riskLevel": task["risk_level"],
                 "allowedExecutors": task["allowed_executors"],
                 "workspaceRoots": task["workspace_roots"],
+                "approvalClass": task.get("approval_class") or "none",
+                "ownerApprovalRef": task.get("owner_approval_ref") or "",
             },
             "facts": facts_payload,
             "dependencies": dependencies,
@@ -162,6 +164,13 @@ class DecisionPolicyEngine:
             blocked_reasons.append("Dependencies are not DONE: {}.".format(
                 ", ".join("{}={}".format(item["id"], item["state"]) for item in pending_dependencies)
             ))
+        if ready_requires_owner_approval(task.get("approval_class") or "none", task.get("owner_approval_ref")):
+            blocked_rules.append("block.owner_approval_missing")
+            blocked_reasons.append(
+                "approvalClass {} requires a non-empty ownerApprovalRef before READY.".format(
+                    task.get("approval_class") or "none"
+                )
+            )
         if blocked_rules:
             return DecisionOutcome.BLOCKED, blocked_rules, blocked_reasons
 

@@ -5,12 +5,18 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..domain.models import ControlTask, TaskPriority, TaskRisk, TaskState
+from ..domain.models import ApprovalClass, ControlTask, TaskPriority, TaskRisk, TaskState, ready_requires_owner_approval
 from ..storage.repository import Repository, TaskNotFoundError
 
 
 TASK_ID_PATTERN = re.compile(r"^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+$")
 EXECUTOR_PATTERN = re.compile(r"^[a-z][a-z0-9-]*$")
+TASK_FIELDS = {
+    "id", "projectId", "title", "objective", "scope", "acceptance", "priority", "riskLevel",
+    "allowedExecutors", "workspaceRoots", "dependencies", "sourceUri", "approvalClass",
+    "ownerApprovalRef",
+}
+APPROVAL_CLASS_VALUES = tuple(item.value for item in ApprovalClass)
 
 ALLOWED_TRANSITIONS = {
     TaskState.DRAFT: {TaskState.NEEDS_DECISION, TaskState.READY, TaskState.BLOCKED},
@@ -54,6 +60,9 @@ def _string_list(value: Any, field_name: str, allow_empty: bool = False) -> List
 def task_from_dict(payload: Dict[str, Any]) -> ControlTask:
     if not isinstance(payload, dict):
         raise TaskValidationError("task payload must be an object")
+    unknown = sorted(set(payload) - TASK_FIELDS)
+    if unknown:
+        raise TaskValidationError("unknown task fields: {}".format(", ".join(unknown)))
     task_id = _required_text(payload.get("id"), "id")
     if not TASK_ID_PATTERN.fullmatch(task_id):
         raise TaskValidationError("id must be an uppercase hyphenated task id")
@@ -68,6 +77,18 @@ def task_from_dict(payload: Dict[str, Any]) -> ControlTask:
     dependencies = _string_list(payload.get("dependencies", []), "dependencies", allow_empty=True)
     if task_id in dependencies:
         raise TaskValidationError("task cannot depend on itself")
+    approval_raw = payload.get("approvalClass", ApprovalClass.NONE.value)
+    if approval_raw is None:
+        approval_raw = ApprovalClass.NONE.value
+    try:
+        approval_class = ApprovalClass(_required_text(approval_raw, "approvalClass"))
+    except ValueError as error:
+        raise TaskValidationError(
+            "approvalClass must be one of {}".format(", ".join(APPROVAL_CLASS_VALUES))
+        ) from error
+    owner_ref = payload.get("ownerApprovalRef")
+    if owner_ref is not None:
+        owner_ref = _required_text(owner_ref, "ownerApprovalRef")
     return ControlTask(
         id=task_id,
         project_id=_required_text(payload.get("projectId"), "projectId"),
@@ -81,6 +102,8 @@ def task_from_dict(payload: Dict[str, Any]) -> ControlTask:
         workspace_roots=_string_list(payload.get("workspaceRoots"), "workspaceRoots"),
         dependencies=dependencies,
         source_uri=str(payload["sourceUri"]).strip() if payload.get("sourceUri") else None,
+        approval_class=approval_class,
+        owner_approval_ref=owner_ref,
     )
 
 
@@ -97,6 +120,8 @@ def source_fingerprint(task: ControlTask) -> str:
         "workspace_roots": task.workspace_roots,
         "dependencies": task.dependencies,
         "source_uri": task.source_uri,
+        "approval_class": task.approval_class.value,
+        "owner_approval_ref": task.owner_approval_ref,
     }, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
@@ -119,6 +144,14 @@ class TaskRegistry:
         from_state = TaskState(task["state"])
         if to_state not in ALLOWED_TRANSITIONS[from_state]:
             raise IllegalTaskTransitionError("{} cannot transition to {}".format(from_state.value, to_state.value))
+        if to_state is TaskState.READY and ready_requires_owner_approval(
+            task.get("approval_class") or ApprovalClass.NONE.value, task.get("owner_approval_ref")
+        ):
+            raise TaskValidationError(
+                "ownerApprovalRef is required before READY for approvalClass={}".format(
+                    task.get("approval_class") or ApprovalClass.NONE.value
+                )
+            )
         if expected_version < 1:
             raise TaskValidationError("expected_version must be positive")
         return self.repository.transition_task(
@@ -167,6 +200,10 @@ class TaskRegistry:
                     "- Risk: `{}`".format(task["risk_level"]),
                     "- Version: `{}`".format(task["version"]),
                     "- Allowed executors: {}".format(", ".join("`{}`".format(item) for item in task["allowed_executors"])),
+                    "- Approval: `{}`".format(task.get("approval_class") or ApprovalClass.NONE.value),
+                    "- Owner approval: {}".format(
+                        "`{}`".format(task["owner_approval_ref"]) if task.get("owner_approval_ref") else "none"
+                    ),
                     "- Dependencies: {}".format(", ".join("`{}`".format(item) for item in task["dependencies"]) or "none"),
                     "",
                     "Objective: {}".format(task["objective"]),
@@ -186,7 +223,7 @@ class TaskRegistry:
         output.write_text(self.render_markdown(project_id), encoding="utf-8")
 
     def _validate_task(self, task: ControlTask) -> None:
-        task_from_dict({
+        payload = {
             "id": task.id,
             "projectId": task.project_id,
             "title": task.title,
@@ -199,4 +236,8 @@ class TaskRegistry:
             "workspaceRoots": task.workspace_roots,
             "dependencies": task.dependencies,
             "sourceUri": task.source_uri,
-        })
+            "approvalClass": task.approval_class.value,
+        }
+        if task.owner_approval_ref:
+            payload["ownerApprovalRef"] = task.owner_approval_ref
+        task_from_dict(payload)

@@ -14,6 +14,8 @@
 - Feishu callbacks store only an allowlisted structured payload. Full messages, unknown form fields and credentials are never persisted.
 - Requirement and direction changes require a stored preview plus a second confirmation; confirmation cannot mutate a running task or create a READY task.
 - Executor identities are enforced by TASK-018 against both the task allowlist and an executor profile's project/risk ceiling. The Dispatcher grants a lease, not filesystem or command authority.
+- Non-`none` `approvalClass` values require a non-empty `ownerApprovalRef` before READY. Knowledge writes, database writes, direction changes and acceptance changes cannot be granted by spoofed fields.
+- The R0 Cursor adapter never auto-discovers Cursor, never concatenates task text into a shell, and redacts suspected secrets from logs and failure reasons.
 - Secrets, tokens, cookies, environment dumps and database contents must not enter findings or audit events.
 
 ## Not yet approved for production exposure

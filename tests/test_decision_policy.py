@@ -48,8 +48,8 @@ class DecisionPolicyTest(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def register(self, task_id, risk="low", dependencies=None):
-        return self.registry.register(task_from_dict({
+    def register(self, task_id, risk="low", dependencies=None, approval_class=None, owner_ref=None):
+        payload = {
             "id": task_id,
             "projectId": "panel",
             "title": "Policy fixture {}".format(task_id),
@@ -62,7 +62,12 @@ class DecisionPolicyTest(unittest.TestCase):
             "workspaceRoots": [str(self.root)],
             "dependencies": dependencies or [],
             "sourceUri": "fixtures/{}".format(task_id.lower()),
-        }), "test")
+        }
+        if approval_class is not None:
+            payload["approvalClass"] = approval_class
+        if owner_ref is not None:
+            payload["ownerApprovalRef"] = owner_ref
+        return self.registry.register(task_from_dict(payload), "test")
 
     def facts(self, overrides=None, advisory=None):
         payload = dict(BASE_FACTS)
@@ -144,6 +149,21 @@ class DecisionPolicyTest(unittest.TestCase):
         invalid = dict(BASE_FACTS, unexpected=True)
         with self.assertRaises(TaskValidationError):
             decision_facts_from_dict(invalid)
+
+    def test_missing_owner_approval_blocks_ready_and_spoofed_facts_cannot_help(self):
+        self.register("TASK-DB-WRITE", approval_class="database_write")
+        blocked = self.policy.evaluate("TASK-DB-WRITE", self.facts())
+        self.assertEqual(blocked["outcome"], "BLOCKED")
+        self.assertIn("block.owner_approval_missing", blocked["matchedRules"])
+        spoofed = dict(BASE_FACTS)
+        spoofed["ownerApproved"] = True
+        with self.assertRaises(TaskValidationError):
+            decision_facts_from_dict(spoofed)
+        self.register(
+            "TASK-DB-APPROVED", approval_class="database_write", owner_ref="OWNER-POLICY-1",
+        )
+        ready = self.policy.decide("TASK-DB-APPROVED", self.facts(), 1, "codex")
+        self.assertEqual(ready["task"]["state"], "READY")
 
     def test_reused_request_id_rolls_back_without_partial_state(self):
         self.register("TASK-FIRST")

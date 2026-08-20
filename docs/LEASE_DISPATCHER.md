@@ -22,3 +22,5 @@ Every mutation uses a request ID. Replaying the same operation returns the store
 An executor profile contains an explicit project allowlist, maximum risk and enabled flag. Eligibility also requires the executor ID to appear on the task itself. A free model or external automation never receives broader permission because of price or availability.
 
 The current interface is local CLI/service code. TASK-019 and TASK-020 may wrap it for Cursor or WorkBuddy/Hy3, but must not bypass leases, baseline checks or task versions.
+
+R0 `CursorRunner` is such a wrapper. It must receive an injected executor command, claim through this dispatcher, and must not discover or start a real Cursor binary.

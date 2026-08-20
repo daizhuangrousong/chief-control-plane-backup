@@ -7,9 +7,11 @@ It never executes a task and it does not approve a human-gated action.
 
 ## Precedence
 
-1. Blocking facts win. Missing safety evidence, an unknown baseline, an unauthorized workspace, incomplete acceptance criteria, or unfinished dependencies produce `BLOCKED`.
+1. Blocking facts win. Missing safety evidence, an unknown baseline, an unauthorized workspace, incomplete acceptance criteria, unfinished dependencies, or a non-`none` `approvalClass` without `ownerApprovalRef` produce `BLOCKED`.
 2. Owner gates run next. Medium/high/critical risk or any architecture, production, permission, external communication, paid, destructive, release, or scope-expansion action produces `NEEDS_DECISION`.
 3. Only a low-risk task that passes every deterministic gate produces `READY`.
+
+`approvalClass` defaults to `none` for legacy tasks. Spoofed fields such as `ownerApproved` cannot grant READY.
 
 ## Model boundary
 
