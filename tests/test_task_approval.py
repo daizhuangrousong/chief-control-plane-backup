@@ -3,7 +3,10 @@ import unittest
 from pathlib import Path
 
 from control_plane.domain.models import ApprovalClass, TaskState
-from control_plane.services import DecisionPolicyEngine, TaskRegistry, TaskValidationError, task_from_dict
+from control_plane.services import (
+    DecisionPolicyEngine, TaskRegistry, TaskValidationError, task_from_dict,
+    verification_commands_for,
+)
 from control_plane.config import ProjectConfig
 from control_plane.domain.models import AgentType
 from control_plane.storage import Repository
@@ -45,6 +48,8 @@ class TaskApprovalContractTest(unittest.TestCase):
             "dependencies": [],
         }
         body.update(updates)
+        if "verificationCommands" not in updates:
+            body["verificationCommands"] = verification_commands_for(body["acceptance"])
         return body
 
     def test_schema_freezes_approval_enum_and_forbids_unknown_properties(self):
@@ -58,6 +63,7 @@ class TaskApprovalContractTest(unittest.TestCase):
         self.assertEqual(schema["properties"]["ownerApprovalRef"]["minLength"], 1)
         self.assertNotIn("approvalClass", schema["required"])
         self.assertNotIn("ownerApprovalRef", schema["required"])
+        self.assertIn("verificationCommands", schema["required"])
 
     def test_legacy_payload_defaults_to_none(self):
         task = task_from_dict(self.payload())

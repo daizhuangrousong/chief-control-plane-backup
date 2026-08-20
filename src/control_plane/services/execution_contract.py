@@ -7,19 +7,18 @@ import os
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 from ..adapters.git import GitError, git_checked
-from .task_registry import TaskValidationError
+from .task_registry import TaskValidationError, criteria_of, verification_commands_of
 
 
 EXECUTION_REPORT_VERSION = "execution-report/1.0.0"
 EXECUTOR_RESULT_VERSION = "executor-result/1.0.0"
 RESULT_FIELDS = {"schemaVersion", "taskId", "taskVersion", "leaseId", "commitRef", "acceptanceChecks"}
-COMMAND_CHECK_FIELDS = {"criterion", "checkType", "status", "evidence", "argv", "exitCode"}
-HUMAN_CHECK_FIELDS = {"criterion", "checkType", "status", "evidence"}
-CHECK_TYPES = {"command", "human"}
+RESULT_CHECK_FIELDS = {"criterion", "commandId", "status", "evidence"}
 CHECK_STATUSES = {"pass", "fail"}
+OUTPUT_LIMIT = 400
 
 
 class ExecutionContractError(TaskValidationError):
@@ -177,17 +176,24 @@ def revalidate_execution_report(
         raise ExecutionContractError("acceptance checks are missing")
     if any(not isinstance(item, dict) or item.get("status") != "pass" for item in checks):
         raise ExecutionContractError("acceptance checks failed")
-    expected_acceptance = [str(item) for item in acceptance]
+    expected_acceptance = criteria_of(acceptance)
     reported_acceptance = [str(item.get("criterion") or "") for item in checks]
     if reported_acceptance != expected_acceptance:
         raise ExecutionContractError("acceptance checks drifted")
-    for item in checks:
+    declared = verification_commands_of(acceptance)
+    if not declared:
+        raise ExecutionContractError("verificationCommands are missing")
+    if len(checks) != len(declared):
+        raise ExecutionContractError("acceptance checks drifted")
+    for item, command in zip(checks, declared):
+        if item.get("commandId") != command.get("id"):
+            raise ExecutionContractError("verification command id drifted")
+        if item.get("argv") != command.get("argv"):
+            raise ExecutionContractError("verification argv drifted")
+        if item.get("exitCode") != 0:
+            raise ExecutionContractError("acceptance command failed")
         if not str(item.get("evidence") or "").strip():
             raise ExecutionContractError("acceptance evidence is empty")
-        if item.get("checkType") not in CHECK_TYPES:
-            raise ExecutionContractError("acceptance checkType is invalid")
-        if item.get("checkType") == "command" and item.get("exitCode") != 0:
-            raise ExecutionContractError("acceptance command failed")
     if report.get("diffCheck") != "pass":
         raise ExecutionContractError("execution diff-check is not pass")
     fresh = inspect_execution(worktree, str(report.get("beforeRef") or ""), scope, runtime_root)
@@ -204,7 +210,7 @@ def revalidate_execution_report(
     reported_tree = Path(str(report.get("worktree") or "")).resolve()
     if reported_tree != Path(worktree).resolve():
         raise ExecutionContractError("execution report worktree mismatch")
-    replay_acceptance_commands(worktree, checks)
+    replay_acceptance_commands(worktree, declared)
     return fresh
 
 
@@ -213,6 +219,7 @@ def parse_executor_result(
     task: Dict[str, Any],
     lease_id: str,
     commit_ref: str,
+    commands: Optional[Sequence[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     text = (raw or "").strip()
     if not text:
@@ -240,9 +247,10 @@ def parse_executor_result(
         raise ExecutionContractError("executor result leaseId mismatch")
     if (payload.get("commitRef") or "").lower() != (commit_ref or "").lower():
         raise ExecutionContractError("executor result commit does not match the leased HEAD")
-    expected = [str(item) for item in (task.get("acceptance") or [])]
-    if not expected:
-        raise ExecutionContractError("task acceptance is missing")
+    declared = list(commands) if commands is not None else verification_commands_of(task.get("acceptance"))
+    if not declared:
+        raise ExecutionContractError("verificationCommands are missing")
+    expected = [str(item["criterion"]) for item in declared]
     checks = payload.get("acceptanceChecks")
     if not isinstance(checks, list) or len(checks) != len(expected):
         raise ExecutionContractError("acceptance checks are missing or the wrong length")
@@ -250,55 +258,29 @@ def parse_executor_result(
     for index, item in enumerate(checks):
         if not isinstance(item, dict):
             raise ExecutionContractError("acceptance check must be an object")
+        if "argv" in item or "exitCode" in item:
+            raise ExecutionContractError("executor must not supply argv")
+        extra_fields = sorted(set(item) - RESULT_CHECK_FIELDS)
+        if extra_fields:
+            raise ExecutionContractError("unknown executor check fields: {}".format(", ".join(extra_fields)))
+        missing_fields = sorted(RESULT_CHECK_FIELDS - set(item))
+        if missing_fields:
+            raise ExecutionContractError("executor check missing fields: {}".format(", ".join(missing_fields)))
         if str(item.get("criterion") or "") != expected[index]:
             raise ExecutionContractError("acceptance checks are out of order")
-        check_type = item.get("checkType")
-        if check_type not in CHECK_TYPES:
-            raise ExecutionContractError("acceptance checkType is invalid")
+        if str(item.get("commandId") or "") != declared[index]["id"]:
+            raise ExecutionContractError("executor command id does not match the Chief contract")
         status = item.get("status")
         if status not in CHECK_STATUSES:
             raise ExecutionContractError("acceptance status is invalid")
         evidence = item.get("evidence")
         if not isinstance(evidence, str) or not evidence.strip():
             raise ExecutionContractError("acceptance evidence is empty")
-        if check_type == "command":
-            extra_fields = sorted(set(item) - COMMAND_CHECK_FIELDS)
-            if extra_fields:
-                raise ExecutionContractError("unknown command check fields: {}".format(", ".join(extra_fields)))
-            missing_fields = sorted(COMMAND_CHECK_FIELDS - set(item))
-            if missing_fields:
-                raise ExecutionContractError("command check missing fields: {}".format(", ".join(missing_fields)))
-            argv = item["argv"]
-            if (
-                not isinstance(argv, list)
-                or not argv
-                or any(not isinstance(part, str) or not part.strip() for part in argv)
-            ):
-                raise ExecutionContractError("acceptance argv is invalid")
-            exit_code = item["exitCode"]
-            if not isinstance(exit_code, int) or isinstance(exit_code, bool):
-                raise ExecutionContractError("acceptance exitCode is invalid")
-            if status == "pass" and exit_code != 0:
-                raise ExecutionContractError("passing acceptance has a non-zero exit code")
-            if status != "pass" or exit_code != 0:
-                raise ExecutionContractError("acceptance command failed")
-            parsed.append({
-                "criterion": expected[index],
-                "checkType": "command",
-                "status": "pass",
-                "evidence": evidence.strip(),
-                "argv": [str(part) for part in argv],
-                "exitCode": exit_code,
-            })
-            continue
-        extra_fields = sorted(set(item) - HUMAN_CHECK_FIELDS)
-        if extra_fields:
-            raise ExecutionContractError("unknown human check fields: {}".format(", ".join(extra_fields)))
         if status != "pass":
-            raise ExecutionContractError("human acceptance failed")
+            raise ExecutionContractError("acceptance command failed")
         parsed.append({
             "criterion": expected[index],
-            "checkType": "human",
+            "commandId": declared[index]["id"],
             "status": "pass",
             "evidence": evidence.strip(),
         })
@@ -312,14 +294,29 @@ def parse_executor_result(
     }
 
 
-def replay_acceptance_commands(worktree: Path, checks: Sequence[Dict[str, Any]]) -> None:
+def _summarize_output(stdout: Optional[str], stderr: Optional[str]) -> str:
+    blob = "\n".join(part for part in (stdout or "", stderr or "") if part).strip()
+    if len(blob) > OUTPUT_LIMIT:
+        blob = blob[:OUTPUT_LIMIT] + "…"
+    return blob
+
+
+def run_chief_verification(
+    worktree: Path,
+    commands: Sequence[Dict[str, Any]],
+    timeout: int = 30,
+    invocations: Optional[List] = None,
+) -> List[Dict[str, Any]]:
     worktree = Path(worktree)
-    for item in checks:
-        if item.get("checkType") != "command":
-            continue
-        argv = item.get("argv")
+    if not commands:
+        raise ExecutionContractError("verificationCommands are missing")
+    results = []
+    for command in commands:
+        argv = command.get("argv")
         if not isinstance(argv, list) or not argv:
-            raise ExecutionContractError("acceptance argv is invalid")
+            raise ExecutionContractError("chief verification argv is invalid")
+        if invocations is not None:
+            invocations.append(list(argv))
         try:
             completed = subprocess.run(
                 [str(part) for part in argv],
@@ -328,11 +325,24 @@ def replay_acceptance_commands(worktree: Path, checks: Sequence[Dict[str, Any]])
                 text=True,
                 check=False,
                 shell=False,
-                timeout=30,
+                timeout=timeout,
             )
         except (OSError, subprocess.SubprocessError) as error:
-            raise ExecutionContractError("acceptance command could not be replayed") from error
-        if completed.returncode != item.get("exitCode"):
-            raise ExecutionContractError("acceptance command exit code does not replay")
+            raise ExecutionContractError("chief verification command could not be started") from error
+        summary = _summarize_output(completed.stdout, completed.stderr) or "exit {}".format(completed.returncode)
         if completed.returncode != 0:
-            raise ExecutionContractError("acceptance command failed on replay")
+            raise ExecutionContractError("chief verification command failed: {}".format(summary))
+        results.append({
+            "criterion": command["criterion"],
+            "commandId": command["id"],
+            "checkType": "command",
+            "status": "pass",
+            "evidence": summary,
+            "argv": [str(part) for part in argv],
+            "exitCode": completed.returncode,
+        })
+    return results
+
+
+def replay_acceptance_commands(worktree: Path, checks: Sequence[Dict[str, Any]]) -> None:
+    run_chief_verification(worktree, checks)

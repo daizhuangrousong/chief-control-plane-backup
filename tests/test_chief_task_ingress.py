@@ -11,7 +11,7 @@ from pathlib import Path
 from control_plane.config import ProjectConfig
 from control_plane.domain.models import AgentType, TaskState
 from control_plane.services import (
-    CursorDaemon, CursorRunner, LeaseDispatcher,
+    CursorDaemon, CursorRunner, LeaseDispatcher, verification_commands_for,
 )
 from control_plane.services.chief_task_ingress import (
     DEFAULT_MAX_BYTES, ENVELOPE_VERSION, ChiefTaskImporter, ChiefTaskIngressError,
@@ -112,6 +112,8 @@ class ChiefTaskIngressTest(unittest.TestCase):
             "approvalClass": "none",
         }
         task.update(updates)
+        if "verificationCommands" not in updates:
+            task["verificationCommands"] = verification_commands_for(task["acceptance"])
         return {"schemaVersion": ENVELOPE_VERSION, "task": task, "facts": dict(CLEAR_FACTS)}
 
     def drop(self, payload, task_id=None):

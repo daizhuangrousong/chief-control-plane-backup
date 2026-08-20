@@ -5,6 +5,7 @@
   "chiefReviewInbox": "/absolute/path/to/r4-runtime-worktree/chief-review-inbox",
   "executionReportDir": "/absolute/path/to/r4-runtime-worktree/var/execution-reports",
   "executorResultSchemaVersion": "executor-result/1.0.0",
+  "verificationCommands": "Chief-authored argv arrays on the task contract; executor results may not supply argv",
   "targetBranch": "main",
   "mergerId": "merge-r4",
   "allowedReviewActors": ["chief"],

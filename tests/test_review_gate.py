@@ -7,6 +7,7 @@ from control_plane.config import ProjectConfig
 from control_plane.domain.models import AgentType, TaskState
 from control_plane.services import (
     LeaseDispatcher, ReviewGate, TaskRegistry, completion_evidence_from_dict, task_from_dict,
+    verification_commands_for,
 )
 from control_plane.storage import Repository
 from control_plane.storage.repository import TaskVersionConflictError
@@ -38,7 +39,8 @@ class ReviewGateTest(unittest.TestCase):
         task = self.registry.register(task_from_dict({
             "id": task_id, "projectId": "panel", "title": task_id,
             "objective": "Finish with evidence", "scope": ["Bounded implementation"],
-            "acceptance": criteria, "priority": "P1", "riskLevel": risk,
+            "acceptance": criteria, "verificationCommands": verification_commands_for(criteria),
+            "priority": "P1", "riskLevel": risk,
             "allowedExecutors": ["codex"], "workspaceRoots": [str(self.root)],
             "dependencies": [],
         }), "planner")
@@ -148,6 +150,7 @@ class ReviewGateTest(unittest.TestCase):
         task = self.registry.register(task_from_dict({
             "id": "TASK-ACTIVE", "projectId": "panel", "title": "Active",
             "objective": "Do work", "scope": ["Work"], "acceptance": ["Done"],
+            "verificationCommands": verification_commands_for(["Done"]),
             "priority": "P1", "riskLevel": "low", "allowedExecutors": ["codex"],
             "workspaceRoots": [str(self.root)], "dependencies": [],
         }), "planner")

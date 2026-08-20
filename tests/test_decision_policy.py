@@ -11,7 +11,10 @@ from control_plane.api.server import ThreadingHTTPServer, create_handler
 from control_plane.config import ProjectConfig
 from control_plane.domain.models import AgentType, TaskState
 from control_plane.main import main
-from control_plane.services import DecisionPolicyEngine, TaskRegistry, TaskValidationError, decision_facts_from_dict, task_from_dict
+from control_plane.services import (
+    DecisionPolicyEngine, TaskRegistry, TaskValidationError, decision_facts_from_dict, task_from_dict,
+    verification_commands_for,
+)
 from control_plane.storage import Repository, TaskVersionConflictError
 
 
@@ -56,6 +59,7 @@ class DecisionPolicyTest(unittest.TestCase):
             "objective": "Classify a task with deterministic safety facts.",
             "scope": ["Policy evaluation"],
             "acceptance": ["Persist an auditable decision"],
+            "verificationCommands": verification_commands_for(["Persist an auditable decision"]),
             "priority": "P1",
             "riskLevel": risk,
             "allowedExecutors": ["codex"],
@@ -191,7 +195,9 @@ class DecisionPolicyTest(unittest.TestCase):
         }), encoding="utf-8")
         task_path.write_text(json.dumps({
             "id": "TASK-CLI", "projectId": "panel", "title": "CLI policy", "objective": "Decide",
-            "scope": ["Policy"], "acceptance": ["Evidence"], "priority": "P1", "riskLevel": "low",
+            "scope": ["Policy"], "acceptance": ["Evidence"],
+            "verificationCommands": verification_commands_for(["Evidence"]),
+            "priority": "P1", "riskLevel": "low",
             "allowedExecutors": ["codex"], "workspaceRoots": [str(self.root)], "dependencies": [],
         }), encoding="utf-8")
         facts_path.write_text(json.dumps(BASE_FACTS), encoding="utf-8")

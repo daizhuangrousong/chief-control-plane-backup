@@ -11,6 +11,7 @@ from control_plane.config import ProjectConfig
 from control_plane.domain.models import AgentType, TaskState
 from control_plane.services import (
     CursorAdapterError, CursorRunner, LeaseDispatcher, TaskRegistry, task_from_dict,
+    verification_commands_for,
 )
 from control_plane.storage import Repository
 
@@ -88,6 +89,8 @@ class CursorRunnerTest(unittest.TestCase):
             "workspaceRoots": [str(workspace or self.root)], "dependencies": [],
         }
         payload.update(updates)
+        if "verificationCommands" not in updates:
+            payload["verificationCommands"] = verification_commands_for(payload["acceptance"])
         task = self.registry.register(task_from_dict(payload), "planner")
         return self.registry.transition(task_id, TaskState.READY, task["version"], "policy", "safe")
 

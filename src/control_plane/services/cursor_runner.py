@@ -13,9 +13,9 @@ from .project_isolation import ISOLATED_PROJECT_IDS
 from .execution_contract import (
     EXECUTION_REPORT_VERSION, EXECUTOR_RESULT_VERSION, ExecutionContractError,
     execution_report_path, inspect_execution, load_execution_report, parse_executor_result,
-    persist_execution_report, replay_acceptance_commands, revalidate_execution_report,
+    persist_execution_report, run_chief_verification, revalidate_execution_report,
 )
-from .task_registry import TaskValidationError
+from .task_registry import TaskValidationError, criteria_of, verification_commands_of
 from .task_worktree import TaskWorktreeError, TaskWorktreePool, assert_control_path
 
 
@@ -70,6 +70,7 @@ class CursorRunner:
         )
         self._project_guard = threading.Lock()
         self.worktree_pool = worktree_pool
+        self.verification_invocations: List[List[str]] = []
         if worktree_pool is not None:
             if execution_report_dir is None:
                 raise CursorAdapterError("execution report directory is required when a worktree pool is enabled")
@@ -156,10 +157,27 @@ class CursorRunner:
                 contract_report = inspect_execution(
                     workspace, before_ref, task.get("scope") or [], self.worktree_pool.runtime_root,
                 )
+                registered = self.dispatcher.repository.get_task(task["id"])
+                commands = verification_commands_of((registered or {}).get("acceptance"))
+                if not commands:
+                    raise ExecutionContractError("verificationCommands are missing from the registered task")
+                view = dict(task)
+                view["acceptance"] = criteria_of((registered or {}).get("acceptance"))
                 parsed_result = parse_executor_result(
-                    completed.stdout, task, lease["lease_id"], contract_report["afterRef"],
+                    completed.stdout, view, lease["lease_id"], contract_report["afterRef"], commands,
                 )
-                replay_acceptance_commands(workspace, parsed_result["acceptanceChecks"])
+                verify_results = run_chief_verification(
+                    workspace, commands, timeout=min(30, self.timeout_seconds),
+                    invocations=self.verification_invocations,
+                )
+                self.worktree_pool.assert_hosts_unchanged(host_snapshot, baseline["baseline_ref"])
+                post = inspect_execution(
+                    workspace, before_ref, task.get("scope") or [], self.worktree_pool.runtime_root,
+                )
+                if post["afterRef"] != contract_report["afterRef"]:
+                    raise ExecutionContractError("verification changed the leased commit")
+                if post["changedPaths"] != contract_report["changedPaths"]:
+                    raise ExecutionContractError("verification changed task scope")
             except (TaskWorktreeError, ExecutionContractError) as error:
                 return self._fail(lease, baseline["baseline_ref"], request_id, str(error))
             self.worktree_pool.mark_phase(task["id"], "executed")
@@ -177,7 +195,7 @@ class CursorRunner:
                 "commitCount": contract_report["commitCount"],
                 "diffCheck": contract_report["diffCheck"],
                 "tests": contract_report["tests"],
-                "acceptanceChecks": parsed_result["acceptanceChecks"],
+                "acceptanceChecks": verify_results,
                 "executorResult": {
                     "schemaVersion": EXECUTOR_RESULT_VERSION,
                     "taskVersion": parsed_result["taskVersion"],
@@ -199,7 +217,7 @@ class CursorRunner:
                     expected_review_version,
                     lease["lease_id"],
                     contract_report["afterRef"],
-                    task.get("acceptance") or [],
+                    (registered or {}).get("acceptance") or [],
                     before_ref,
                 )
             except (OSError, ExecutionContractError) as error:
@@ -281,7 +299,11 @@ class CursorRunner:
             "title": task["title"],
             "objective": task["objective"],
             "scope": task["scope"],
-            "acceptance": task["acceptance"],
+            "acceptance": criteria_of(task.get("acceptance")),
+            "verification": [
+                {"id": item["id"], "criterion": item["criterion"]}
+                for item in verification_commands_of(task.get("acceptance"))
+            ],
             "workspaceRoots": (
                 [str(Path(workspace).resolve())]
                 if self.worktree_pool is not None

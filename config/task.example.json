@@ -12,6 +12,18 @@
     "Illegal transitions and duplicate tasks are rejected",
     "Current state can be rebuilt from transition history"
   ],
+  "verificationCommands": [
+    {
+      "id": "verify-illegal-transitions",
+      "criterion": "Illegal transitions and duplicate tasks are rejected",
+      "argv": ["test", "-n", "x"]
+    },
+    {
+      "id": "verify-history",
+      "criterion": "Current state can be rebuilt from transition history",
+      "argv": ["test", "-n", "x"]
+    }
+  ],
   "priority": "P0",
   "riskLevel": "medium",
   "allowedExecutors": [

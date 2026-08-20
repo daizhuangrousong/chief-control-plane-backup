@@ -6,9 +6,12 @@ import unittest
 from pathlib import Path
 
 from control_plane.config import ProjectConfig
-from control_plane.domain.models import AgentType, TaskState
+from control_plane.domain.models import AgentType, ControlTask, TaskPriority, TaskRisk, TaskState
 from control_plane.main import build_parser, main
-from control_plane.services import IllegalTaskTransitionError, TaskRegistry, task_from_dict
+from control_plane.services import (
+    IllegalTaskTransitionError, TaskRegistry, TaskValidationError, task_from_dict,
+    verification_commands_for,
+)
 from control_plane.storage import (
     DuplicateTaskError,
     Repository,
@@ -34,13 +37,15 @@ class TaskRegistryTest(unittest.TestCase):
         self.temp.cleanup()
 
     def task(self, task_id="TASK-015", dependencies=None, title=None):
+        acceptance = ["Reject illegal transitions", "Rebuild state from history"]
         return task_from_dict({
             "id": task_id,
             "projectId": "panel",
             "title": title or "Build task registry",
             "objective": "Create an auditable task source of truth.",
             "scope": ["Schema", "State transitions", "Markdown projection"],
-            "acceptance": ["Reject illegal transitions", "Rebuild state from history"],
+            "acceptance": acceptance,
+            "verificationCommands": verification_commands_for(acceptance),
             "priority": "P0",
             "riskLevel": "medium",
             "allowedExecutors": ["codex", "workbuddy-hy3"],
@@ -123,6 +128,7 @@ class TaskRegistryTest(unittest.TestCase):
         task_path.write_text(json.dumps({
             "id": "TASK-015", "projectId": "panel", "title": "Registry",
             "objective": "Auditable state", "scope": ["Schema"], "acceptance": ["History"],
+            "verificationCommands": verification_commands_for(["History"]),
             "priority": "P0", "riskLevel": "low", "allowedExecutors": ["codex"],
             "workspaceRoots": [str(self.root)], "dependencies": [],
         }), encoding="utf-8")
@@ -136,6 +142,68 @@ class TaskRegistryTest(unittest.TestCase):
         rendered = output_path.read_text(encoding="utf-8")
         self.assertIn("TASK-015", rendered)
         self.assertTrue(rendered.startswith("# Chief Task Registry"))
+
+    def test_verification_commands_are_required_and_strict(self):
+        acceptance = ["Reject illegal transitions", "Rebuild state from history"]
+        payload = {
+            "id": "TASK-VERIFY-001",
+            "projectId": "panel",
+            "title": "Verify",
+            "objective": "Chief argv only",
+            "scope": ["Schema"],
+            "acceptance": acceptance,
+            "priority": "P0",
+            "riskLevel": "low",
+            "allowedExecutors": ["codex"],
+            "workspaceRoots": [str(self.root)],
+            "dependencies": [],
+        }
+        with self.assertRaisesRegex(TaskValidationError, "verificationCommands is required"):
+            task_from_dict(payload)
+        with self.assertRaisesRegex(TaskValidationError, "must be an argv array, not a shell string"):
+            task_from_dict(dict(payload, verificationCommands=[{
+                "id": "verify-1", "criterion": acceptance[0], "argv": "test -n x",
+            }, {
+                "id": "verify-2", "criterion": acceptance[1], "argv": ["test", "-n", "x"],
+            }]))
+        with self.assertRaisesRegex(TaskValidationError, "must not use -c"):
+            task_from_dict(dict(payload, verificationCommands=[{
+                "id": "verify-1", "criterion": acceptance[0], "argv": ["python3", "-c", "print(1)"],
+            }, {
+                "id": "verify-2", "criterion": acceptance[1], "argv": ["test", "-n", "x"],
+            }]))
+        with self.assertRaisesRegex(TaskValidationError, "must not invoke a shell"):
+            task_from_dict(dict(payload, verificationCommands=[{
+                "id": "verify-1", "criterion": acceptance[0], "argv": ["bash", "pwn.sh"],
+            }, {
+                "id": "verify-2", "criterion": acceptance[1], "argv": ["test", "-n", "x"],
+            }]))
+        with self.assertRaisesRegex(TaskValidationError, "must not contain absolute paths"):
+            task_from_dict(dict(payload, verificationCommands=[{
+                "id": "verify-1", "criterion": acceptance[0],
+                "argv": ["touch", "/tmp/pwned"],
+            }, {
+                "id": "verify-2", "criterion": acceptance[1], "argv": ["test", "-n", "x"],
+            }]))
+        swapped = verification_commands_for(acceptance)
+        swapped[0]["criterion"], swapped[1]["criterion"] = swapped[1]["criterion"], swapped[0]["criterion"]
+        with self.assertRaisesRegex(TaskValidationError, "missing, extra, or out of order"):
+            task_from_dict(dict(payload, verificationCommands=swapped))
+
+    def test_legacy_unstructured_acceptance_cannot_become_ready(self):
+        task = ControlTask(
+            id="TASK-LEGACY-001", project_id="panel", title="Legacy",
+            objective="Old unstructured task", scope=["Schema"],
+            acceptance=["History"],
+            priority=TaskPriority.P0, risk_level=TaskRisk.LOW,
+            allowed_executors=["codex"], workspace_roots=[str(self.root)],
+        )
+        with self.assertRaisesRegex(TaskValidationError, "verificationCommands is required"):
+            self.registry.register(task, "codex")
+        self.repository.register_task(task, "legacy-fingerprint", "codex", "legacy-1")
+        with self.assertRaisesRegex(TaskValidationError, "verificationCommands are required before READY"):
+            self.registry.transition("TASK-LEGACY-001", TaskState.READY, 1, "codex", "ready")
+        self.assertEqual(self.repository.get_task("TASK-LEGACY-001")["state"], "DRAFT")
 
 
 class ProductNamingTest(unittest.TestCase):

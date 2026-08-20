@@ -7,6 +7,18 @@
     "objective": "Fake example only. Do not execute against a real workspace.",
     "scope": ["reports/EXAMPLE.md"],
     "acceptance": ["Stay in REVIEW", "No production changes"],
+    "verificationCommands": [
+      {
+        "id": "verify-review",
+        "criterion": "Stay in REVIEW",
+        "argv": ["test", "-f", "reports/EXAMPLE.md"]
+      },
+      {
+        "id": "verify-no-prod",
+        "criterion": "No production changes",
+        "argv": ["test", "-n", "x"]
+      }
+    ],
     "priority": "P2",
     "riskLevel": "low",
     "allowedExecutors": ["cursor-r1"],

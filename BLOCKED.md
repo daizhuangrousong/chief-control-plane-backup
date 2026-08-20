@@ -1,3 +1,3 @@
-# BLOCKED · R4.2 真实验收与可恢复合并
+# BLOCKED · R4.3 Chief 固定验收命令
 
 无

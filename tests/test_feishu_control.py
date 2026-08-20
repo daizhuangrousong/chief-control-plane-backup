@@ -12,7 +12,10 @@ from control_plane.adapters.feishu_cards import (
 )
 from control_plane.config import ProjectConfig
 from control_plane.domain.models import AgentType, TaskState
-from control_plane.services import FeishuControlError, FeishuControlInbox, TaskRegistry, task_from_dict
+from control_plane.services import (
+    FeishuControlError, FeishuControlInbox, TaskRegistry, task_from_dict,
+    verification_commands_for,
+)
 from control_plane.storage import Repository
 
 
@@ -37,6 +40,7 @@ class FeishuControlTest(unittest.TestCase):
         task = self.registry.register(task_from_dict({
             "id": task_id, "projectId": "panel", "title": "Controlled task",
             "objective": "Wait for owner", "scope": ["Control"], "acceptance": ["Owner confirms"],
+            "verificationCommands": verification_commands_for(["Owner confirms"]),
             "priority": "P1", "riskLevel": "high", "allowedExecutors": ["codex"],
             "workspaceRoots": [str(self.root)], "dependencies": [],
         }), "test")

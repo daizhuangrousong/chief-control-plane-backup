@@ -6,7 +6,7 @@ from control_plane.config import ProjectConfig
 from control_plane.domain.models import AgentType, TaskState
 from control_plane.services import (
     ExecutorReportService, LeaseDispatcher, TaskRegistry, completion_evidence_from_report,
-    executor_report_from_dict, task_from_dict,
+    executor_report_from_dict, task_from_dict, verification_commands_for,
 )
 from control_plane.storage import Repository, TaskVersionConflictError
 
@@ -29,7 +29,9 @@ class ExecutorReportTest(unittest.TestCase):
         task = self.registry.register(task_from_dict({
             "id": "TASK-REPORT", "projectId": "panel", "title": "Report",
             "objective": "Submit evidence", "scope": ["Read a document"],
-            "acceptance": ["Report a digest"], "priority": "P1", "riskLevel": "low",
+            "acceptance": ["Report a digest"],
+            "verificationCommands": verification_commands_for(["Report a digest"]),
+            "priority": "P1", "riskLevel": "low",
             "allowedExecutors": ["workbuddy-hy3"], "workspaceRoots": [str(self.root)],
             "dependencies": [],
         }), "planner")

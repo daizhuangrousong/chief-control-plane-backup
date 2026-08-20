@@ -8,6 +8,7 @@
 - A single-commit contract, independent merger, and baseline promoter keep review/merge/promotion off the task executor. Same-hash outbox files are consumed once.
 - R4.1: executor `workspaceRoots` is only the leased worktree; `TaskWorktreePool` rejects `runtime == project` and nested runtime/pool; review identity comes from a runtime Chief inbox, not caller strings; the merger reloads and recomputes durable execution evidence before fast-forward.
 - R4.2: executor stdout must be a real `executor-result/1.0.0` envelope; reports persist before REVIEW; Chief decisions are consumed only after a confirmed fast-forward, with idempotent crash recovery. Tier 1 same-user only; R5 Eval repo is the next allowed attach.
+- R4.3: `verificationCommands` are Chief-authored argv on the task contract. The runner executes those argv only, re-checks the leased tree and hosts, and rejects Executor-supplied argv. Unstructured tasks cannot become READY.
 
 ### R3 — Chief document dispatch activation
 

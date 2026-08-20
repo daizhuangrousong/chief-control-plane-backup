@@ -89,7 +89,7 @@ class ControlTask:
     title: str
     objective: str
     scope: List[str]
-    acceptance: List[str]
+    acceptance: Any
     priority: TaskPriority
     risk_level: TaskRisk
     allowed_executors: List[str]
@@ -98,6 +98,7 @@ class ControlTask:
     source_uri: Optional[str] = None
     approval_class: ApprovalClass = ApprovalClass.NONE
     owner_approval_ref: Optional[str] = None
+    # acceptance is either a criteria string list (legacy) or a task-acceptance/2.0.0 document.
 
 
 @dataclass(frozen=True)

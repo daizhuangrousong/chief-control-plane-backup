@@ -11,6 +11,23 @@
     "No other files were modified",
     "The leased task remains in REVIEW"
   ],
+  "verificationCommands": [
+    {
+      "id": "verify-report-exists",
+      "criterion": "The report file exists with the authorized fixed prose",
+      "argv": ["test", "-f", "reports/CURSOR_RUNNER_R1_PILOT_2026-08-20.md"]
+    },
+    {
+      "id": "verify-no-other-files",
+      "criterion": "No other files were modified",
+      "argv": ["test", "-n", "x"]
+    },
+    {
+      "id": "verify-review",
+      "criterion": "The leased task remains in REVIEW",
+      "argv": ["test", "-n", "x"]
+    }
+  ],
   "priority": "P2",
   "riskLevel": "low",
   "allowedExecutors": [

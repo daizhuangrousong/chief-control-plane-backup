@@ -43,15 +43,15 @@ subprocess.run(["git", "add", "--", rel], check=True)
 subprocess.run(["git", "commit", "-qm", "task " + payload["taskId"]], check=True)
 commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
 checks = []
-for criterion in payload.get("acceptance") or []:
+verification = payload.get("verification") or []
+for index, criterion in enumerate(payload.get("acceptance") or []):
+    command_id = verification[index]["id"] if index < len(verification) else "verify-%s" % (index + 1)
     ran = subprocess.run(["test", "-f", rel])
     checks.append({
         "criterion": criterion,
-        "checkType": "command",
+        "commandId": command_id,
         "status": "pass" if ran.returncode == 0 else "fail",
         "evidence": "test -f %s exited %s" % (rel, ran.returncode),
-        "argv": ["test", "-f", rel],
-        "exitCode": ran.returncode,
     })
 sys.stdout.write(json.dumps({
     "schemaVersion": "executor-result/1.0.0",
@@ -82,11 +82,9 @@ sys.stdout.write(json.dumps({
     "commitRef": commit,
     "acceptanceChecks": [{
         "criterion": (payload.get("acceptance") or ["Stay in REVIEW"])[0],
-        "checkType": "command",
+        "commandId": ((payload.get("verification") or [{"id": "verify-1"}])[0]).get("id", "verify-1"),
         "status": "fail",
         "evidence": "test -f does-not-exist exited %s" % ran.returncode,
-        "argv": ["test", "-f", "does-not-exist"],
-        "exitCode": ran.returncode,
     }],
 }) + "\\n")
 """
@@ -180,15 +178,33 @@ sys.stdout.write(json.dumps({
     "commitRef": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
     "acceptanceChecks": [{
         "criterion": criterion,
-        "checkType": "command",
+        "commandId": (payload.get("verification") or [{"id": "verify-1"}])[0].get("id", "verify-1"),
         "status": "pass" if ran.returncode == 0 else "fail",
         "evidence": "test -f %s exited %s" % (rel, ran.returncode),
-        "argv": ["test", "-f", rel],
-        "exitCode": ran.returncode,
     } for criterion in payload.get("acceptance") or [] for ran in [subprocess.run(["test", "-f", rel])]],
 }) + "\\n")
 """
 
+
+FAKE_CUSTOM = """
+import json, subprocess, sys
+from pathlib import Path
+payload = json.loads(sys.stdin.read())
+rel = sys.argv[1]
+Path(rel).parent.mkdir(parents=True, exist_ok=True)
+Path(rel).write_text(sys.argv[2], encoding="utf-8")
+subprocess.run(["git", "add", "--", rel], check=True)
+subprocess.run(["git", "commit", "-qm", "task " + payload["taskId"]], check=True)
+commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+sys.stdout.write(json.dumps({
+    "schemaVersion": "executor-result/1.0.0",
+    "taskId": payload["taskId"],
+    "taskVersion": payload["taskVersion"],
+    "leaseId": payload["leaseId"],
+    "commitRef": commit,
+    "acceptanceChecks": json.loads(sys.argv[3]),
+}) + "\\n")
+"""
 
 class CrashMerger(TaskMerger):
     def __init__(self, *args, crash_at=None, **kwargs):
@@ -306,7 +322,8 @@ class ExecutionLifecycleTest(unittest.TestCase):
         self.assertEqual(self._head(self.runtime), self.runtime_head)
         self.assertEqual(self._porcelain(self.runtime).strip(), "")
 
-    def envelope(self, task_id, relpath, body):
+    def envelope(self, task_id, relpath, body, argv=None):
+        criterion = "Stay in REVIEW"
         return {
             "schemaVersion": ENVELOPE_VERSION,
             "task": {
@@ -315,7 +332,12 @@ class ExecutionLifecycleTest(unittest.TestCase):
                 "title": task_id,
                 "objective": "Write {} with fake executor.".format(relpath),
                 "scope": [relpath],
-                "acceptance": ["Stay in REVIEW"],
+                "acceptance": [criterion],
+                "verificationCommands": [{
+                    "id": "verify-1",
+                    "criterion": criterion,
+                    "argv": list(argv) if argv else ["test", "-f", relpath],
+                }],
                 "priority": "P2",
                 "riskLevel": "low",
                 "allowedExecutors": ["cursor-r1"],
@@ -345,6 +367,7 @@ class ExecutionLifecycleTest(unittest.TestCase):
             worktree_pool=self.pool, execution_report_dir=self.report_dir,
             **extra
         )
+        self.last_runner = runner
         return CursorDaemon(runner, "control-panel", idle_seconds=0, reporter=self.importer.reporter.report_cycle).run(max_cycles=1)
 
     def decide(self, result):
@@ -382,6 +405,11 @@ class ExecutionLifecycleTest(unittest.TestCase):
         self.assertEqual(result_a["task_state"], "REVIEW")
         self.assertEqual(result_a["diff_check"], "pass")
         self.assertEqual(result_a["changed_paths"], [first_path])
+        check_a = result_a["execution_report"]["acceptanceChecks"][0]
+        self.assertEqual(check_a["argv"], ["test", "-f", first_path])
+        self.assertEqual(check_a["exitCode"], 0)
+        self.assertEqual(check_a["commandId"], "verify-1")
+        self.assertEqual(self.last_runner.verification_invocations, [["test", "-f", first_path]])
         self.assertEqual(self.repository.get_task("TASK-R4-A")["state"], "REVIEW")
         receipt_a = json.loads((self.inbox / "TASK-R4-A.json").read_text(encoding="utf-8"))
         self.assertEqual(receipt_a["taskState"], "REVIEW")
@@ -515,6 +543,8 @@ class ExecutionLifecycleTest(unittest.TestCase):
         roots = [Path(item).resolve() for item in payload["workspaceRoots"]]
         self.assertEqual(roots, [lease])
         self.assertNotIn(str(self.project), payload["workspaceRoots"])
+        for item in payload.get("verification") or []:
+            self.assertNotIn("argv", item)
         self.assertFalse((self.project / ".pwn").exists())
         self.assertFalse((self.runtime / ".pwn").exists())
         self.assertEqual(self._head(self.project), self.head)
@@ -702,6 +732,118 @@ class ExecutionLifecycleTest(unittest.TestCase):
         self.assertEqual(recovered["commitRef"].lower(), result["after_ref"].lower())
         self.assertEqual(self._rev_count(before, recovered["commitRef"]), 1)
         self.assertTrue(self.review_inbox.is_consumed("TASK-R4-CRASH-RECEIPT"))
+        self.assert_runtime_frozen()
+
+    def _honest_check(self, **updates):
+        payload = {
+            "criterion": "Stay in REVIEW",
+            "commandId": "verify-1",
+            "status": "pass",
+            "evidence": "executor claimed pass",
+        }
+        payload.update(updates)
+        return payload
+
+    def test_executor_supplied_argv_never_runs(self):
+        relpath = "reports/TASK-R4-SH.md"
+        self.drop(self.envelope("TASK-R4-SH", relpath, "x"))
+        self.importer.ingest_once()
+        result = self.run_task(self.fake_command(
+            FAKE_CUSTOM, relpath, "ok\n",
+            json.dumps([self._honest_check(argv=["sh", "-c", "touch pwned"], exitCode=0)]),
+        ))
+        self.assertEqual(result["task_state"], "FAILED")
+        self.assertEqual(self.last_runner.verification_invocations, [])
+        self.assertFalse((self.project / "pwned").exists())
+        self._enable_executor()
+
+        relpath = "reports/TASK-R4-ABS.md"
+        self.drop(self.envelope("TASK-R4-ABS", relpath, "x"))
+        self.importer.ingest_once()
+        result = self.run_task(self.fake_command(
+            FAKE_CUSTOM, relpath, "ok\n",
+            json.dumps([self._honest_check(argv=["touch", "/tmp/r4-pwned"], exitCode=0)]),
+        ))
+        self.assertEqual(result["task_state"], "FAILED")
+        self.assertEqual(self.last_runner.verification_invocations, [])
+        self.assertFalse(Path("/tmp/r4-pwned").exists())
+        self._enable_executor()
+
+        relpath = "reports/TASK-R4-DRIFT.md"
+        self.drop(self.envelope("TASK-R4-DRIFT", relpath, "x"))
+        self.importer.ingest_once()
+        result = self.run_task(self.fake_command(
+            FAKE_CUSTOM, relpath, "ok\n",
+            json.dumps([self._honest_check(argv=["test", "-f", "other.md"], exitCode=0)]),
+        ))
+        self.assertEqual(result["task_state"], "FAILED")
+        self.assertEqual(self.last_runner.verification_invocations, [])
+        self._enable_executor()
+
+        relpath = "reports/TASK-R4-EXTRA.md"
+        self.drop(self.envelope("TASK-R4-EXTRA", relpath, "x"))
+        self.importer.ingest_once()
+        result = self.run_task(self.fake_command(
+            FAKE_CUSTOM, relpath, "ok\n",
+            json.dumps([self._honest_check(), self._honest_check(commandId="verify-2")]),
+        ))
+        self.assertEqual(result["task_state"], "FAILED")
+        self.assertEqual(self.last_runner.verification_invocations, [])
+        self.assertEqual(self._head(self.project), self.head)
+        self.assert_runtime_frozen()
+
+    def test_chief_verification_failures_cannot_enter_review(self):
+        relpath = "reports/TASK-R4-CMDFAIL.md"
+        self.drop(self.envelope("TASK-R4-CMDFAIL", relpath, "x", argv=["test", "-f", "does-not-exist"]))
+        self.importer.ingest_once()
+        result = self.run_task(self.fake_command(FAKE_COMMIT, relpath, "ok\n"))
+        self.assertEqual(result["task_state"], "FAILED")
+        self.assertEqual(self.last_runner.verification_invocations, [["test", "-f", "does-not-exist"]])
+        self.assertFalse((self.report_dir / "TASK-R4-CMDFAIL.json").exists())
+        self._enable_executor()
+
+        relpath = "reports/TASK-R4-DIRTYCMD.md"
+        self.drop(self.envelope("TASK-R4-DIRTYCMD", relpath, "x", argv=["touch", "stain"]))
+        self.importer.ingest_once()
+        result = self.run_task(self.fake_command(FAKE_COMMIT, relpath, "ok\n"))
+        self.assertEqual(result["task_state"], "FAILED")
+        self.assertEqual(self.last_runner.verification_invocations, [["touch", "stain"]])
+        self.assertNotEqual(self.repository.get_task("TASK-R4-DIRTYCMD")["state"], "REVIEW")
+        self._enable_executor()
+
+        relpath = "reports/TASK-R4-COMMITCMD.md"
+        self.drop(self.envelope(
+            "TASK-R4-COMMITCMD", relpath, "x",
+            argv=["git", "commit", "--allow-empty", "-m", "verify"],
+        ))
+        self.importer.ingest_once()
+        result = self.run_task(self.fake_command(FAKE_COMMIT, relpath, "ok\n"))
+        self.assertEqual(result["task_state"], "FAILED")
+        self.assertEqual(
+            self.last_runner.verification_invocations,
+            [["git", "commit", "--allow-empty", "-m", "verify"]],
+        )
+        self.assertNotEqual(self.repository.get_task("TASK-R4-COMMITCMD")["state"], "REVIEW")
+        self._enable_executor()
+
+        relpath = "reports/TASK-R4-HOSTCMD.md"
+        self.drop(self.envelope("TASK-R4-HOSTCMD", relpath, "x", argv=["touch", "../../../.pwn"]))
+        self.importer.ingest_once()
+        result = self.run_task(self.fake_command(FAKE_COMMIT, relpath, "ok\n"))
+        self.assertEqual(result["task_state"], "FAILED")
+        self.assertEqual(self.last_runner.verification_invocations, [["touch", "../../../.pwn"]])
+        self.assertNotEqual(self.repository.get_task("TASK-R4-HOSTCMD")["state"], "REVIEW")
+        self.assertEqual(self._head(self.project), self.head)
+        self.assert_runtime_frozen()
+
+    def test_missing_verification_commands_are_blocked_not_ready(self):
+        payload = self.envelope("TASK-R4-NOCMD", "reports/TASK-R4-NOCMD.md", "x")
+        del payload["task"]["verificationCommands"]
+        self.drop(payload)
+        receipt = self.importer.ingest_once()[0]
+        self.assertEqual(receipt["state"], "BLOCKED")
+        self.assertIsNone(self.repository.get_task("TASK-R4-NOCMD"))
+        self.assertEqual(self._head(self.project), self.head)
         self.assert_runtime_frozen()
 
 

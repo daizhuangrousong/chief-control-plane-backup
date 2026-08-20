@@ -64,9 +64,11 @@ R4 adds isolated task worktrees, a single-commit contract, a runtime-side Chief
 review inbox, durable execution reports that the merger re-checks, and baseline
 promotion. The executor payload may only name the leased worktree. Acceptance
 must come from an `executor-result/1.0.0` envelope; the runner never auto-marks
-pass. R4.2 is Tier 1 (same-user, fallible executor) and may only attach a new
-Eval repository in R5 — not Julius, Director, databases, secrets, or deploy.
-Do not enable a LaunchAgent for R4. See `docs/EXECUTION_LIFECYCLE.md`.
+pass. Acceptance argv come only from Chief `verificationCommands` on the task
+contract; Executor argv are rejected. R4.3 is Tier 1 (same-user, fallible
+executor) and may only attach a new Eval repository in R5 — not Julius, Director,
+databases, secrets, or deploy. Do not enable a LaunchAgent for R4. See
+`docs/EXECUTION_LIFECYCLE.md`.
 
 The API binds to `127.0.0.1:8765` by default. Do not bind it to a public interface until authentication,
 request auditing and deployment security have been implemented and reviewed.

@@ -19,7 +19,9 @@ from control_plane.services.cursor_launch import (
 )
 from control_plane.config import ProjectConfig
 from control_plane.domain.models import AgentType, TaskState
-from control_plane.services import CursorRunner, LeaseDispatcher, TaskRegistry, task_from_dict
+from control_plane.services import (
+    CursorRunner, LeaseDispatcher, TaskRegistry, task_from_dict, verification_commands_for,
+)
 from control_plane.storage import Repository
 
 
@@ -281,6 +283,7 @@ class CursorDaemonTest(unittest.TestCase):
         task = self.registry.register(task_from_dict({
             "id": "TASK-R1-PILOT", "projectId": "control-panel", "title": "pilot",
             "objective": "Write the report.", "scope": ["reports"], "acceptance": ["REVIEW"],
+            "verificationCommands": verification_commands_for(["REVIEW"]),
             "priority": "P2", "riskLevel": "low", "allowedExecutors": ["cursor-r1"],
             "workspaceRoots": [str(self.root)], "dependencies": [], "approvalClass": "none",
         }), "planner")
@@ -301,6 +304,7 @@ class CursorDaemonTest(unittest.TestCase):
             task = self.registry.register(task_from_dict({
                 "id": "TASK-R1-BAD", "projectId": "control-panel", "title": "bad",
                 "objective": "Reject me.", "scope": ["gate"], "acceptance": ["rejected"],
+                "verificationCommands": verification_commands_for(["rejected"]),
                 "priority": "P2", "riskLevel": "low", "allowedExecutors": ["cursor-r1"],
                 "workspaceRoots": [str(outside)], "dependencies": [], "approvalClass": "none",
             }), "planner")
@@ -326,6 +330,7 @@ class CursorDaemonTest(unittest.TestCase):
             task = self.registry.register(task_from_dict({
                 "id": "TASK-R1-PERM", "projectId": "control-panel", "title": "permanent",
                 "objective": "Reject me forever.", "scope": ["gate"], "acceptance": ["rejected"],
+                "verificationCommands": verification_commands_for(["rejected"]),
                 "priority": "P2", "riskLevel": "low", "allowedExecutors": ["cursor-r1"],
                 "workspaceRoots": [str(outside)], "dependencies": [], "approvalClass": "none",
             }), "planner")

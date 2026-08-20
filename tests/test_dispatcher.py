@@ -8,7 +8,7 @@ from control_plane.config import ProjectConfig
 from control_plane.domain.models import AgentType, TaskState
 from control_plane.services import (
     BaselineConflictError, ExecutorUnauthorizedError, LeaseConflictError, LeaseDispatcher,
-    TaskRegistry, task_from_dict,
+    TaskRegistry, task_from_dict, verification_commands_for,
 )
 from control_plane.storage import Repository
 
@@ -40,7 +40,9 @@ class DispatcherTest(unittest.TestCase):
     def ready_task(self, task_id="TASK-LOW", risk="low", project="panel", executors=None):
         task = self.registry.register(task_from_dict({
             "id": task_id, "projectId": project, "title": task_id, "objective": "Execute safely",
-            "scope": ["Scoped work"], "acceptance": ["Evidence"], "priority": "P1",
+            "scope": ["Scoped work"], "acceptance": ["Evidence"],
+            "verificationCommands": verification_commands_for(["Evidence"]),
+            "priority": "P1",
             "riskLevel": risk, "allowedExecutors": executors or ["workbuddy-hy3", "codex"],
             "workspaceRoots": [str(self.root)], "dependencies": [],
         }), "planner")
