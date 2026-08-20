@@ -8,7 +8,7 @@ from pathlib import Path
 from control_plane.adapters.feishu import normalize_card_action
 from control_plane.adapters.feishu_cards import (
     build_callback_status_card, build_callback_test_card, build_decision_card, build_intake_confirmation_card,
-    build_requirement_card,
+    build_r1_bootstrap_notice_card, build_requirement_card,
 )
 from control_plane.config import ProjectConfig
 from control_plane.domain.models import AgentType, TaskState
@@ -274,6 +274,13 @@ class FeishuControlTest(unittest.TestCase):
         )
         self.assertEqual(failed["header"]["template"], "red")
         self.assertIn("未执行", failed["header"]["title"]["content"])
+
+    def test_r1_notice_card_is_outbound_only_and_needs_no_decision(self):
+        card = build_r1_bootstrap_notice_card()
+        self.assertIn("无需决策", card["body"]["elements"][0]["content"])
+        self.assertNotIn("button", str(card))
+        self.assertNotIn("callback", str(card))
+        self.assertNotIn("form_submit", str(card))
 
 
 if __name__ == "__main__":

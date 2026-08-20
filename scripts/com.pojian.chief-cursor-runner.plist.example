@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.pojian.chief-cursor-runner</string>
+  <key>WorkingDirectory</key>
+  <string>/absolute/path/to/r1-worktree</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>/absolute/path/to/r1-worktree/scripts/run_cursor_runner.py</string>
+    <string>--config</string>
+    <string>/absolute/path/to/r1-worktree/config/projects.cursor-r1.local.json</string>
+    <string>--executor-id</string>
+    <string>cursor-r1</string>
+    <string>--executor-command</string>
+    <string>/usr/bin/python3</string>
+    <string>/absolute/path/to/r1-worktree/scripts/cursor_cli_wrapper.py</string>
+    <string>--runner-config</string>
+    <string>/absolute/path/to/r1-worktree/config/cursor-runner.local.json</string>
+    <string>--project</string>
+    <string>control-panel</string>
+    <string>--idle-seconds</string>
+    <string>30</string>
+    <string>--log-file</string>
+    <string>/absolute/path/to/logs/chief-cursor-runner.log</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PYTHONPATH</key>
+    <string>/absolute/path/to/r1-worktree/src</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>60</integer>
+  <key>Nice</key>
+  <integer>10</integer>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>Umask</key>
+  <integer>63</integer>
+  <key>StandardOutPath</key>
+  <string>/absolute/path/to/logs/chief-cursor-runner.launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/absolute/path/to/logs/chief-cursor-runner.launchd.err.log</string>
+</dict>
+</plist>

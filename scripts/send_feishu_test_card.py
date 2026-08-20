@@ -4,12 +4,13 @@
 import json
 import os
 import secrets
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
-from control_plane.adapters.feishu_cards import build_callback_test_card
+from control_plane.adapters.feishu_cards import build_callback_test_card, build_r1_bootstrap_notice_card
 
 
 API_BASE = "https://open.feishu.cn/open-apis"
@@ -50,13 +51,17 @@ def main() -> None:
     app_secret = required_env("FEISHU_APP_SECRET")
     owner_open_id = required_env("FEISHU_OWNER_OPEN_ID")
     project_id = os.environ.get("FEISHU_TEST_PROJECT_ID", "panel")
+    notice = "--r1-notice" in sys.argv
 
     token_response = request_json(
         API_BASE + "/auth/v3/app_access_token/internal",
         {"app_id": app_id, "app_secret": app_secret},
     )
-    expires_at = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
-    card = build_callback_test_card(project_id, secrets.token_urlsafe(24), expires_at)
+    if notice:
+        card = build_r1_bootstrap_notice_card()
+    else:
+        expires_at = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
+        card = build_callback_test_card(project_id, secrets.token_urlsafe(24), expires_at)
     query = urllib.parse.urlencode({"receive_id_type": "open_id"})
     message_response = request_json(
         API_BASE + "/im/v1/messages?" + query,

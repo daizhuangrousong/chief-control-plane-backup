@@ -1,0 +1,25 @@
+{
+  "id": "TASK-R1-PILOT",
+  "projectId": "control-panel",
+  "title": "R1 Cursor CLI bootstrap pilot",
+  "objective": "Create exactly one report file with the fixed R1 pilot prose. Do not access the network, change code, or commit.",
+  "scope": [
+    "reports/CURSOR_RUNNER_R1_PILOT_2026-08-20.md"
+  ],
+  "acceptance": [
+    "The report file exists with the authorized fixed prose",
+    "No other files were modified",
+    "The leased task remains in REVIEW"
+  ],
+  "priority": "P2",
+  "riskLevel": "low",
+  "allowedExecutors": [
+    "cursor-r1"
+  ],
+  "workspaceRoots": [
+    "/absolute/path/to/r1-worktree"
+  ],
+  "dependencies": [],
+  "sourceUri": "reports/CURSOR_RUNNER_R1_BOOTSTRAP_EXECUTOR_BRIEF_2026-08-20.md",
+  "approvalClass": "none"
+}

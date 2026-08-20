@@ -1,8 +1,14 @@
-# PROGRESS · CURSOR-RUNNER R0
+# PROGRESS · CURSOR-RUNNER R1 BOOTSTRAP
 
-- 目标：冻结可机器判定的审批分类，并落地只接受注入命令的 R0 Cursor 适配器；证明 Chief 可安全派单。
-- 任务 0：75 tests / 0 fail / 0 skip；CLI 未安装；与本任务无关的脏文件不纳入 commit。
-- 任务 1：`approvalClass` + `ownerApprovalRef` 已冻结；缺引用与伪字段不能进入 READY。
-- 任务 2：`CursorRunner` 只接受注入 command；成功只到 REVIEW；越界/缺审批/漂移/超时/失败/重复占用已覆盖。
-- 最大风险：误启动真实 Cursor。本轮真实 Cursor 调用次数为 0。
-- 验收：反向越界与缺 Owner 审批被拒后全绿；准备原子本地 commit。
+- 目标：接入官方 Cursor CLI，完成一次低风险真实试跑，验证飞书出站，通过后建立仅面向 Control Plane 的本机常驻 Runner。停在 Chief REVIEW。
+- Owner approval：`OWNER-APPROVAL-20260820-CURSOR-R1-BOOTSTRAP`
+- 工作树：`/Users/pojian/repos/director-control-plane-r1-bootstrap` 分支 `cursor-runner-r1-bootstrap`
+- 阶段：代码与反向门禁完成；真实 pilot 与飞书出站独立 BLOCKED；LaunchAgent 未启用；待 Chief REVIEW
+- 任务 0：91 tests / 0 fail / 0 skip；HEAD=R0 `fe5062fa75691ba366d209aac1f927f0e29ad643`
+- 最终测试：103 tests / 0 fail / 0 skip；`git diff --check` 通过
+- 真实 Cursor `--print` 调用次数：0
+- 飞书测试卡：0
+- LaunchAgent label：未启用（模板 `com.pojian.chief-cursor-runner`）
+- 日志路径：未启用（预定 `var/logs/chief-cursor-runner.log`）
+- Pilot task/lease/review id：无（未发起真实调用）
+- 最大风险：在未认证时误发 `--print` 或把凭据写入 plist。已 fail closed。

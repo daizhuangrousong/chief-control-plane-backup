@@ -94,6 +94,19 @@ def build_escalation_card(event: Dict[str, Any], escalation_id: str,
     }
 
 
+def build_r1_bootstrap_notice_card() -> Dict[str, Any]:
+    return {
+        "schema": "2.0",
+        "header": {"title": _text("Cursor Runner R1 启动验证")},
+        "body": {"elements": [
+            {"tag": "markdown", "content": (
+                "R1 启动验证、无需决策。本卡只验证 Control Plane 飞书出站通道，"
+                "不批准任务、不改变状态、不需要回复。"
+            )},
+        ]},
+    }
+
+
 def build_callback_status_card(payload: Dict[str, Any], processed: Dict[str, Any]) -> Dict[str, Any]:
     action = str(payload.get("action") or "").strip()
     result = processed.get("result") or {}

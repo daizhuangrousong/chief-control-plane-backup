@@ -1,0 +1,7 @@
+{
+  "cliPath": "/absolute/path/to/cursor-agent",
+  "projectAllowlist": ["control-panel"],
+  "timeoutSeconds": 300,
+  "idleSeconds": 30,
+  "logPath": "/absolute/path/to/logs/chief-cursor-runner.log"
+}

@@ -1,0 +1,16 @@
+{
+  "database": "var/cursor-r1.sqlite3",
+  "projects": [
+    {
+      "id": "control-panel",
+      "name": "Chief Control Plane",
+      "kind": "control_plane",
+      "owner": "Owner",
+      "root": ".",
+      "ledger": "PROGRESS.md",
+      "status": "BLOCKED.md",
+      "knowledge_roots": ["docs"],
+      "enabled_agents": ["knowledge", "observer", "release"]
+    }
+  ]
+}

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### R1 — Official Cursor CLI bootstrap
+
+- Added an explicit stdin wrapper that validates the R0 JSON payload and invokes the official Cursor CLI from an injected absolute `cliPath`.
+- Added `cursor-daemon`: one Control Plane project, one task at a time, idle when the queue is empty, rotating logs, no credential files.
+- Missing CLI authentication, timeout and non-zero exits fail closed. LaunchAgent remains disabled until the authorized real pilot passes.
+
 ### R0 — Isolated Cursor Adapter
 
 - Added machine-checked `approvalClass` (`none | knowledge_write | database_write | direction | acceptance_change`); non-`none` tasks cannot become READY without `ownerApprovalRef`.

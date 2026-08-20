@@ -33,6 +33,7 @@ Chief 登记并只读观察 Julius 与 Director。它不替代两仓执行，不
 - 飞书 Owner Control Channel 通过企业自建应用长连接接收结构化决策与方向调整；白名单、过期、nonce 和 event_id 阻止越权与重放。
 - Lease Dispatcher 让授权执行器以唯一、可过期租约领取 READY 任务，并在基线漂移时拒绝提交。
 - R0 Cursor 适配器只接受注入的 executor command，经 LeaseDispatcher 领取单任务，成功只进入 REVIEW；生产默认不会发现或启动真实 Cursor。
+- R1 通过 gitignore 本地配置注入官方 Cursor CLI 路径；空队列常驻 Runner 保持 idle，不启动 Cursor。
 - 本地只读 API 提供 `/health`、`/api/projects`、`/api/runs`、`/api/findings`、`/api/reviews`、`/api/checks`、`/api/releases`、`/api/tasks`。
 
 ### 本地启动（clone 后第一段）

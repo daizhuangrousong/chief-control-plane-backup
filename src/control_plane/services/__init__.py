@@ -19,6 +19,8 @@ from .content_intake import (
     INTAKE_VERSION, ChiefIntakeService, content_intake_from_dict, intake_fingerprint,
 )
 from .cursor_runner import CursorAdapterError, CursorRunner, redact_secrets
+from .cursor_cli_wrapper import CursorCliWrapperError, load_runner_config, parse_task_payload
+from .cursor_daemon import CursorDaemon, CursorDaemonError
 
 __all__ = [
     "DecisionPolicyEngine", "IllegalTaskTransitionError", "Orchestrator", "POLICY_VERSION",
@@ -33,4 +35,6 @@ __all__ = [
     "INTAKE_VERSION", "ChiefIntakeService", "content_intake_from_dict", "intake_fingerprint",
     "decision_facts_from_dict", "task_from_dict",
     "CursorAdapterError", "CursorRunner", "redact_secrets",
+    "CursorCliWrapperError", "load_runner_config", "parse_task_payload",
+    "CursorDaemon", "CursorDaemonError",
 ]

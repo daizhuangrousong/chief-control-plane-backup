@@ -53,6 +53,8 @@ Julius stays isolated from this dispatcher. Do not register a Julius task or ena
 
 R0 Cursor execution is a separate `cursor-run` command. It requires `--executor-command` and never defaults to a real Cursor binary. Success stops at REVIEW.
 
+R1 adds an explicit stdin wrapper and `cursor-daemon`. The official CLI path must come from gitignored local config. Empty queues stay idle and do not start Cursor. Enable the LaunchAgent only after the authorized single-task pilot has passed.
+
 The API binds to `127.0.0.1:8765` by default. Do not bind it to a public interface until authentication,
 request auditing and deployment security have been implemented and reviewed.
 

@@ -1,30 +1,36 @@
-# Cursor Runner R0
+# Cursor Runner R1
 
-R0 is an isolated, injected-command adapter. It lets Chief hand a READY task to a Cursor executor
-without Chief executing the work, and without discovering or starting a real Cursor binary.
+R1 reuses the R0 injected-command adapter. The official Cursor CLI is started only by an
+explicit local wrapper whose `cliPath` comes from a gitignored config file.
 
 ## Contract
 
-- The executor command must be injected. There is no default PATH lookup and no `cursor-agent` fallback.
-- The adapter claims exactly one task through `LeaseDispatcher`. It does not create a parallel queue
-  and does not write SQLite except through the existing lease operations.
-- Before claim it checks project isolation, `workspaceRoots` against the registered project root,
-  task version, git HEAD vs the registered baseline, and owner approval.
-- The task body is passed as JSON on stdin. The command list is never shell-concatenated with task text.
-- Timeout or a non-zero exit calls `fail`. Success calls `complete` and stops at `REVIEW`.
-- Logs and failure reasons redact `token`/`secret`/`password`/`api key`/`bearer`/`sk-` values.
-- A project may have at most one active execution.
+- `CursorRunner` still requires `--executor-command`. There is no PATH lookup and no default binary.
+- The wrapper reads R0 JSON from stdin, validates task/project/workspace/baseline/version/approval,
+  and passes the payload as a single argv JSON prompt. Task text is never concatenated into a shell.
+- Missing authentication, timeout, or a non-zero CLI exit fail closed. Suspected secrets are redacted.
+- Success still stops at `REVIEW`. Julius remains isolated. One active execution per project.
+- `cursor-daemon` claims at most one task per cycle and stays idle when the queue is empty.
 
-## Not authorized in R0
+## Local config
 
-Real Cursor, launchd, Julius, Director, KESU, database writes, and remote push/merge/deploy.
-
-## Command
+Copy `config/cursor-runner.example.json` to `config/cursor-runner.local.json` (gitignored).
+Set `cliPath` to the absolute `cursor-agent` executable. Do not store API keys in that file.
 
 ```bash
-PYTHONPATH=src python3 -m control_plane.main --config config/projects.local.json cursor-run \
-  --executor-id cursor-r0 \
-  --executor-command /path/to/injected/executor
+PYTHONPATH=src python3 -m control_plane.main --config config/projects.cursor-r1.local.json cursor-run \
+  --executor-id cursor-r1 \
+  --executor-command /usr/bin/python3 scripts/cursor_cli_wrapper.py --runner-config /absolute/config/cursor-runner.local.json \
+  --project control-panel
 ```
 
-Omitting `--executor-command` is a usage error. Do not add a default Cursor path.
+## Daemon
+
+The user-level LaunchAgent template is `scripts/com.pojian.chief-cursor-runner.plist.example`.
+It may be enabled only after the R1 reverse gates and the single real pilot have passed.
+The plist must contain PYTHONPATH and explicit program arguments only — never credentials.
+
+## Not authorized in R1
+
+Julius, Director, KESU, knowledge-base writes, business database changes, push, merge, deploy,
+and a second real Cursor `--print` invocation.
