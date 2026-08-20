@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### R2 — Chief task document ingress
+
+- Added a gitignored outbox/inbox file contract so Chief can drop one strict JSON task envelope without using the CLI or SQLite.
+- The importer registers DRAFT through TaskRegistry, runs the existing decision policy, and writes a short receipt. Identical files are idempotent; illegal or conflicting drops never start Cursor.
+- The runner may publish read-only CLAIMED/RUNNING/REVIEW/BLOCKED receipts. REVIEW is never auto-completed. No R2 LaunchAgent is enabled.
+
 ### R1 — Official Cursor CLI bootstrap
 
 - Added an explicit stdin wrapper that validates the R0 JSON payload and invokes the official Cursor CLI from an injected absolute `cliPath`.

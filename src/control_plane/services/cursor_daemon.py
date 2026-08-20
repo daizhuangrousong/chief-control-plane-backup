@@ -24,6 +24,7 @@ class CursorDaemon:
         sleep: Optional[Callable[[float], None]] = None,
         halt_file: Optional[Path] = None,
         reject_limit: int = 3,
+        reporter: Optional[Callable[[Dict[str, Any]], None]] = None,
     ):
         if not project_id or project_id in ISOLATED_PROJECT_IDS:
             raise CursorDaemonError("project is not allowed for the Cursor daemon")
@@ -36,6 +37,7 @@ class CursorDaemon:
         self.idle_seconds = idle_seconds
         self.halt_file = Path(halt_file) if halt_file else None
         self.reject_limit = reject_limit
+        self._reporter = reporter
         self._log = log or (lambda _message: None)
         self._sleep = sleep or time.sleep
         self._reject_fingerprint = None
@@ -68,6 +70,8 @@ class CursorDaemon:
                 if halted is not None:
                     halted["cycles"] = cycles + 1
                     return halted
+            if self._reporter:
+                self._reporter(last)
             cycles += 1
             last = dict(last)
             last["cycles"] = cycles

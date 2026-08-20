@@ -22,6 +22,9 @@ from .cursor_runner import CursorAdapterError, CursorRunner, redact_secrets
 from .cursor_cli_wrapper import CursorCliWrapperError, load_runner_config, parse_task_payload
 from .cursor_daemon import CursorDaemon, CursorDaemonError
 from .cursor_launch import CursorLaunchError, parse_executor_command
+from .chief_task_ingress import (
+    ChiefTaskImporter, ChiefTaskIngressError, ChiefTaskReporter, atomic_write_json,
+)
 
 __all__ = [
     "DecisionPolicyEngine", "IllegalTaskTransitionError", "Orchestrator", "POLICY_VERSION",
@@ -38,4 +41,5 @@ __all__ = [
     "CursorAdapterError", "CursorRunner", "redact_secrets",
     "CursorCliWrapperError", "load_runner_config", "parse_task_payload",
     "CursorDaemon", "CursorDaemonError", "CursorLaunchError", "parse_executor_command",
+    "ChiefTaskImporter", "ChiefTaskIngressError", "ChiefTaskReporter", "atomic_write_json",
 ]

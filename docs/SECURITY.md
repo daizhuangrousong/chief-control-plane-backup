@@ -18,6 +18,7 @@
 - The R0 Cursor adapter never auto-discovers Cursor, never concatenates task text into a shell, and redacts suspected secrets from logs and failure reasons.
 - The R1 CLI wrapper requires an explicit absolute `cliPath` from gitignored local config, refuses secrets in that file, filters CLI subprocess env to a runtime/auth allowlist, and will not start `--print` when the CLI is unauthenticated.
 - Cursor daemon halt files and LaunchAgent plists must not contain credentials. Permanent rejections stop for Chief instead of retrying forever.
+- R2 Chief task envelopes are ordinary JSON files in a gitignored outbox. Symlinks, unknown fields, path escape, truncated JSON and oversized files are rejected. The importer never starts Cursor and never writes Julius or Director.
 - Secrets, tokens, cookies, environment dumps and database contents must not enter findings or audit events.
 
 ## Not yet approved for production exposure

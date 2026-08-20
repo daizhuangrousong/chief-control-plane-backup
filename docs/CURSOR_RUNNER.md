@@ -42,3 +42,6 @@ permanent rejection has been corrected.
 
 Julius, Director, KESU, knowledge-base writes, business database changes, push, merge, deploy,
 and a second real Cursor `--print` invocation.
+
+R2 Chief file ingress is documented in `docs/CHIEF_TASK_INGRESS.md`. It reuses this runner
+and must not be installed as a second LaunchAgent.

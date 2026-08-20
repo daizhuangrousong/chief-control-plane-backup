@@ -1,0 +1,6 @@
+{
+  "outboxDir": "/absolute/path/to/chief-task-outbox",
+  "inboxDir": "/absolute/path/to/chief-task-inbox",
+  "allowedProjects": ["control-panel"],
+  "maxBytes": 262144
+}

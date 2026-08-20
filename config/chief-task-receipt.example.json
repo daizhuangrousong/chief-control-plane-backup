@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "chief-task-receipt/1.0.0",
+  "taskId": "TASK-R2-EXAMPLE",
+  "sourceHash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "taskVersion": 2,
+  "state": "REVIEW",
+  "matchedRules": ["auto.low_risk_all_clear"],
+  "observedAt": "2026-08-20T00:00:00+00:00",
+  "leaseId": "00000000-0000-0000-0000-000000000000",
+  "error": null
+}

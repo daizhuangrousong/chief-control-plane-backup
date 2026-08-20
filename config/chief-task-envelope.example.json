@@ -1,0 +1,32 @@
+{
+  "schemaVersion": "chief-task-envelope/1.0.0",
+  "task": {
+    "id": "TASK-R2-EXAMPLE",
+    "projectId": "control-panel",
+    "title": "Example Chief task envelope",
+    "objective": "Fake example only. Do not execute against a real workspace.",
+    "scope": ["reports/EXAMPLE.md"],
+    "acceptance": ["Stay in REVIEW", "No production changes"],
+    "priority": "P2",
+    "riskLevel": "low",
+    "allowedExecutors": ["cursor-r1"],
+    "workspaceRoots": ["/absolute/path/to/control-panel"],
+    "dependencies": [],
+    "sourceUri": "chief-task-outbox/TASK-R2-EXAMPLE.json",
+    "approvalClass": "none"
+  },
+  "facts": {
+    "architectureChange": false,
+    "productionChange": false,
+    "permissionChange": false,
+    "externalCommunication": false,
+    "paidAction": false,
+    "destructiveAction": false,
+    "releaseAction": false,
+    "scopeExpansion": false,
+    "safetyEvidenceComplete": true,
+    "baselineKnown": true,
+    "workspaceAuthorized": true,
+    "acceptanceComplete": true
+  }
+}

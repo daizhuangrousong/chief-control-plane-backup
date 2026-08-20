@@ -55,6 +55,8 @@ R0 Cursor execution is a separate `cursor-run` command. It requires `--executor-
 
 R1 adds an explicit stdin wrapper and `cursor-daemon`. The official CLI path must come from gitignored local config. `--executor-command` is a JSON argv array so wrapper options cannot be swallowed. Empty queues stay idle. Identical permanent rejections write a halt file and stop; LaunchAgent must use `KeepAlive SuccessfulExit=false`. Enable the LaunchAgent only after the authorized single-task pilot has passed.
 
+R2 adds a gitignored Chief outbox/inbox. Chief writes one JSON envelope; `scripts/run_chief_task_ingress.py` registers through TaskRegistry and the existing policy engine. Do not enable an R2 LaunchAgent. Do not ingest into the R1 sqlite file. See `docs/CHIEF_TASK_INGRESS.md`.
+
 The API binds to `127.0.0.1:8765` by default. Do not bind it to a public interface until authentication,
 request auditing and deployment security have been implemented and reviewed.
 

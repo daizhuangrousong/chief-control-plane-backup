@@ -1,13 +1,13 @@
-# BLOCKED · CURSOR-RUNNER R1.2
+# BLOCKED · R2 Chief 任务文档入口
 
 ## Feishu outbound
 
-BLOCKED: `config/feishu-control.local.json` exists with an owner allowlist, but `FEISHU_APP_ID` and `FEISHU_APP_SECRET` are unset in this process. No test card was sent. Credentials were not requested or fabricated. R1.2 did not attempt outbound Feishu.
+BLOCKED: `FEISHU_APP_ID` and `FEISHU_APP_SECRET` are unset. R2 did not send cards or request credentials.
 
 ## Real Cursor `--print`
 
-无新阻塞。累计仍为 1 次（R1.1 已用完额度）。本任务增量为 0，未再调用 Cursor。
+无。累计仍为 1 次。本任务增量 0。未启用 R2 常驻 importer/runner。
 
 ## LaunchAgent
 
-无。`com.pojian.chief-cursor-runner` 已加载并 idle。halt file 不存在。飞书 worker 未常驻。
+R1 `com.pojian.chief-cursor-runner` 保持 idle。R2 未安装新的 LaunchAgent。
