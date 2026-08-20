@@ -11,7 +11,9 @@ from ..domain.models import ApprovalClass, ready_requires_owner_approval
 from .dispatcher import BaselineConflictError, LeaseConflictError, LeaseDispatcher
 from .project_isolation import ISOLATED_PROJECT_IDS
 from .execution_contract import (
-    EXECUTION_REPORT_VERSION, ExecutionContractError, inspect_execution, persist_execution_report,
+    EXECUTION_REPORT_VERSION, EXECUTOR_RESULT_VERSION, ExecutionContractError,
+    execution_report_path, inspect_execution, load_execution_report, parse_executor_result,
+    persist_execution_report, replay_acceptance_commands, revalidate_execution_report,
 )
 from .task_registry import TaskValidationError
 from .task_worktree import TaskWorktreeError, TaskWorktreePool, assert_control_path
@@ -146,18 +148,71 @@ class CursorRunner:
                 completed.stdout, completed.stderr,
             )
             return self._fail(lease, baseline["baseline_ref"], request_id, reason)
+        expected_review_version = None
+        durable = None
         if self.worktree_pool is not None:
             try:
                 self.worktree_pool.assert_hosts_unchanged(host_snapshot, baseline["baseline_ref"])
                 contract_report = inspect_execution(
                     workspace, before_ref, task.get("scope") or [], self.worktree_pool.runtime_root,
                 )
+                parsed_result = parse_executor_result(
+                    completed.stdout, task, lease["lease_id"], contract_report["afterRef"],
+                )
+                replay_acceptance_commands(workspace, parsed_result["acceptanceChecks"])
             except (TaskWorktreeError, ExecutionContractError) as error:
                 return self._fail(lease, baseline["baseline_ref"], request_id, str(error))
             self.worktree_pool.mark_phase(task["id"], "executed")
+            running = self.dispatcher.repository.get_task(task["id"])
+            expected_review_version = int(running["version"]) + 1
+            durable = {
+                "schemaVersion": EXECUTION_REPORT_VERSION,
+                "taskId": task["id"],
+                "taskVersion": expected_review_version,
+                "leaseId": lease["lease_id"],
+                "baselineRef": before_ref,
+                "beforeRef": contract_report["beforeRef"],
+                "afterRef": contract_report["afterRef"],
+                "changedPaths": contract_report["changedPaths"],
+                "commitCount": contract_report["commitCount"],
+                "diffCheck": contract_report["diffCheck"],
+                "tests": contract_report["tests"],
+                "acceptanceChecks": parsed_result["acceptanceChecks"],
+                "executorResult": {
+                    "schemaVersion": EXECUTOR_RESULT_VERSION,
+                    "taskVersion": parsed_result["taskVersion"],
+                    "commitRef": parsed_result["commitRef"],
+                },
+                "worktree": str(workspace),
+            }
+            try:
+                persist_execution_report(self.execution_report_dir, durable)
+                report_path = execution_report_path(self.execution_report_dir, task["id"])
+                self._after_persist(report_path)
+                loaded = load_execution_report(self.execution_report_dir, task["id"])
+                revalidate_execution_report(
+                    loaded,
+                    workspace,
+                    self.worktree_pool.runtime_root,
+                    task.get("scope") or [],
+                    task["id"],
+                    expected_review_version,
+                    lease["lease_id"],
+                    contract_report["afterRef"],
+                    task.get("acceptance") or [],
+                    before_ref,
+                )
+            except (OSError, ExecutionContractError) as error:
+                return self._fail(
+                    lease, baseline["baseline_ref"], request_id,
+                    "execution report persist failed: {}".format(error),
+                )
+            self._before_complete()
         try:
             result = self.dispatcher.complete(
-                lease["lease_id"], self.executor_id, baseline["baseline_ref"], request_id + ":complete",
+                lease["lease_id"], self.executor_id,
+                self._completion_baseline(lease, baseline["baseline_ref"]),
+                request_id + ":complete",
             )
         except BaselineConflictError as error:
             return self._fail(
@@ -166,36 +221,25 @@ class CursorRunner:
             )
         if result.get("task_state") != "REVIEW":
             raise CursorAdapterError("success must enter REVIEW, found {}".format(result.get("task_state")))
+        if expected_review_version is not None and result.get("task_version") != expected_review_version:
+            raise CursorAdapterError("REVIEW taskVersion does not match the persisted report")
         self._emit("completed {} into REVIEW".format(task["id"]))
-        if contract_report is not None:
-            acceptance = [str(item) for item in (task.get("acceptance") or [])]
-            if not acceptance:
-                raise CursorAdapterError("acceptance checks are missing after execution")
-            durable = {
-                "schemaVersion": EXECUTION_REPORT_VERSION,
-                "taskId": task["id"],
-                "taskVersion": result["task_version"],
-                "leaseId": result["lease_id"],
-                "baselineRef": before_ref,
-                "beforeRef": contract_report["beforeRef"],
-                "afterRef": contract_report["afterRef"],
-                "changedPaths": contract_report["changedPaths"],
-                "commitCount": contract_report["commitCount"],
-                "diffCheck": contract_report["diffCheck"],
-                "tests": contract_report["tests"],
-                "acceptanceChecks": [
-                    {"criterion": item, "status": "pass", "evidence": contract_report["afterRef"]}
-                    for item in acceptance
-                ],
-                "worktree": str(workspace),
-            }
-            persist_execution_report(self.execution_report_dir, durable)
+        if durable is not None:
             result["before_ref"] = durable["beforeRef"]
             result["after_ref"] = durable["afterRef"]
             result["changed_paths"] = durable["changedPaths"]
             result["diff_check"] = durable["diffCheck"]
             result["execution_report"] = durable
         return result
+
+    def _after_persist(self, path: Path) -> None:
+        return None
+
+    def _before_complete(self) -> None:
+        return None
+
+    def _completion_baseline(self, lease: Dict[str, Any], registered: str) -> str:
+        return registered
 
     def _assert_safe_to_claim(self, task: Dict[str, Any]) -> None:
         if task["project_id"] in self.isolated_project_ids:

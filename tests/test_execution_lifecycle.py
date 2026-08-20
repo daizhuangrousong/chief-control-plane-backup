@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -40,6 +41,66 @@ Path(rel).parent.mkdir(parents=True, exist_ok=True)
 Path(rel).write_text(sys.argv[2], encoding="utf-8")
 subprocess.run(["git", "add", "--", rel], check=True)
 subprocess.run(["git", "commit", "-qm", "task " + payload["taskId"]], check=True)
+commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+checks = []
+for criterion in payload.get("acceptance") or []:
+    ran = subprocess.run(["test", "-f", rel])
+    checks.append({
+        "criterion": criterion,
+        "checkType": "command",
+        "status": "pass" if ran.returncode == 0 else "fail",
+        "evidence": "test -f %s exited %s" % (rel, ran.returncode),
+        "argv": ["test", "-f", rel],
+        "exitCode": ran.returncode,
+    })
+sys.stdout.write(json.dumps({
+    "schemaVersion": "executor-result/1.0.0",
+    "taskId": payload["taskId"],
+    "taskVersion": payload["taskVersion"],
+    "leaseId": payload["leaseId"],
+    "commitRef": commit,
+    "acceptanceChecks": checks,
+}) + "\\n")
+"""
+
+FAKE_FAIL_CHECK = """
+import json, subprocess, sys
+from pathlib import Path
+payload = json.loads(sys.stdin.read())
+rel = sys.argv[1]
+Path(rel).parent.mkdir(parents=True, exist_ok=True)
+Path(rel).write_text(sys.argv[2], encoding="utf-8")
+subprocess.run(["git", "add", "--", rel], check=True)
+subprocess.run(["git", "commit", "-qm", "task " + payload["taskId"]], check=True)
+commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+ran = subprocess.run(["test", "-f", "does-not-exist"])
+sys.stdout.write(json.dumps({
+    "schemaVersion": "executor-result/1.0.0",
+    "taskId": payload["taskId"],
+    "taskVersion": payload["taskVersion"],
+    "leaseId": payload["leaseId"],
+    "commitRef": commit,
+    "acceptanceChecks": [{
+        "criterion": (payload.get("acceptance") or ["Stay in REVIEW"])[0],
+        "checkType": "command",
+        "status": "fail",
+        "evidence": "test -f does-not-exist exited %s" % ran.returncode,
+        "argv": ["test", "-f", "does-not-exist"],
+        "exitCode": ran.returncode,
+    }],
+}) + "\\n")
+"""
+
+FAKE_PLAIN = """
+import json, subprocess, sys
+from pathlib import Path
+payload = json.loads(sys.stdin.read())
+rel = sys.argv[1]
+Path(rel).parent.mkdir(parents=True, exist_ok=True)
+Path(rel).write_text(sys.argv[2], encoding="utf-8")
+subprocess.run(["git", "add", "--", rel], check=True)
+subprocess.run(["git", "commit", "-qm", "task " + payload["taskId"]], check=True)
+sys.stdout.write("ok\\n")
 """
 
 FAKE_EMPTY = """
@@ -111,7 +172,49 @@ for raw in walk(payload):
             target.write_text("pwned\\n", encoding="utf-8")
     except OSError:
         pass
+sys.stdout.write(json.dumps({
+    "schemaVersion": "executor-result/1.0.0",
+    "taskId": payload["taskId"],
+    "taskVersion": payload["taskVersion"],
+    "leaseId": payload["leaseId"],
+    "commitRef": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+    "acceptanceChecks": [{
+        "criterion": criterion,
+        "checkType": "command",
+        "status": "pass" if ran.returncode == 0 else "fail",
+        "evidence": "test -f %s exited %s" % (rel, ran.returncode),
+        "argv": ["test", "-f", rel],
+        "exitCode": ran.returncode,
+    } for criterion in payload.get("acceptance") or [] for ran in [subprocess.run(["test", "-f", rel])]],
+}) + "\\n")
 """
+
+
+class CrashMerger(TaskMerger):
+    def __init__(self, *args, crash_at=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.crash_at = crash_at
+
+    def _crash(self, point):
+        if self.crash_at == point:
+            raise TaskMergeError("injected crash at {}".format(point))
+
+
+class TruncateReportRunner(CursorRunner):
+    def _after_persist(self, path):
+        path.write_text("{", encoding="utf-8")
+
+
+class ReplaceReportRunner(CursorRunner):
+    def _after_persist(self, path):
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["afterRef"] = "0" * 40
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+class StaleCompleteRunner(CursorRunner):
+    def _completion_baseline(self, _lease, _registered):
+        return "0" * 40
 
 
 class ExecutionLifecycleTest(unittest.TestCase):
@@ -234,11 +337,13 @@ class ExecutionLifecycleTest(unittest.TestCase):
         fake.write_text(script, encoding="utf-8")
         return [sys.executable, str(fake), *args]
 
-    def run_task(self, command):
+    def run_task(self, command, runner_cls=None, runner_kwargs=None):
         self.calls["executor"] += 1
-        runner = CursorRunner(
+        extra = dict(runner_kwargs or {})
+        runner = (runner_cls or CursorRunner)(
             self.dispatcher, "cursor-r1", command, timeout_seconds=20,
             worktree_pool=self.pool, execution_report_dir=self.report_dir,
+            **extra
         )
         return CursorDaemon(runner, "control-panel", idle_seconds=0, reporter=self.importer.reporter.report_cycle).run(max_cycles=1)
 
@@ -377,8 +482,9 @@ class ExecutionLifecycleTest(unittest.TestCase):
         subprocess.run(["git", "-C", occupancy["path"], "reset", "-q", "--hard", result["after_ref"]], check=True)
         merged = self.merger().merge("TASK-R4-C", "merge-C")
         self.calls["merge"] += 1
-        with self.assertRaises(TaskMergeError):
-            self.merger().merge("TASK-R4-C", "merge-dup")
+        replayed = self.merger().merge("TASK-R4-C", "merge-dup")
+        self.assertEqual(replayed["commitRef"], merged["commitRef"])
+        self.assertEqual(self._head(self.project), merged["commitRef"])
         failed = BaselinePromoter(
             self.dispatcher, self.project, self.runtime, runtime_healthy=lambda: False,
         ).promote("control-panel", merged["commitRef"], "promote-fail")
@@ -453,6 +559,149 @@ class ExecutionLifecycleTest(unittest.TestCase):
         with self.assertRaises(TaskWorktreeError):
             TaskWorktreePool(self.runtime, self.project, self.runtime / "nested-pool")
         self.assertEqual(self._head(self.project), self.head)
+        self.assert_runtime_frozen()
+
+    def test_failed_acceptance_cannot_enter_review(self):
+        relpath = "reports/TASK-R4-FAILCHECK.md"
+        self.drop(self.envelope("TASK-R4-FAILCHECK", relpath, "x"))
+        self.importer.ingest_once()
+        result = self.run_task(self.fake_command(FAKE_FAIL_CHECK, relpath, "body\n"))
+        self.assertEqual(result["task_state"], "FAILED")
+        self.assertEqual(self.repository.get_task("TASK-R4-FAILCHECK")["state"], "FAILED")
+        self.assertFalse((self.report_dir / "TASK-R4-FAILCHECK.json").exists())
+        self.assertEqual(self.dispatcher.get_project_baseline("control-panel")["baseline_ref"], self.head)
+        self.assert_runtime_frozen()
+
+    def _enable_executor(self):
+        self.dispatcher.register_executor("cursor-r1", ["control-panel"], "low", enabled=True)
+
+    def _rev_count(self, start, end):
+        return int(subprocess.check_output(
+            ["git", "-C", str(self.project), "rev-list", "--count", "{}..{}".format(start, end)],
+            text=True,
+        ).strip())
+
+    def _crash_merger(self, crash_at):
+        return CrashMerger(
+            self.repository, self.dispatcher, self.project, self.pool,
+            review_inbox=self.review_inbox, execution_report_dir=self.report_dir,
+            receipt_dir=self.inbox, target_branch="main", crash_at=crash_at,
+        )
+
+    def test_malformed_or_plain_text_result_cannot_enter_review(self):
+        self.drop(self.envelope("TASK-R4-PLAIN", "reports/TASK-R4-PLAIN.md", "x"))
+        self.importer.ingest_once()
+        result = self.run_task(self.fake_command(FAKE_PLAIN, "reports/TASK-R4-PLAIN.md", "x\n"))
+        self.assertEqual(result["task_state"], "FAILED")
+        self.assertEqual(self.repository.get_task("TASK-R4-PLAIN")["state"], "FAILED")
+        self.assertEqual(self._head(self.project), self.head)
+        self.assert_runtime_frozen()
+
+    def test_report_write_truncate_replace_and_complete_conflict_fail_closed(self):
+        self.drop(self.envelope("TASK-R4-WRITEFAIL", "reports/TASK-R4-WRITEFAIL.md", "x"))
+        self.importer.ingest_once()
+        self.report_dir.mkdir(parents=True, exist_ok=True)
+        os.chmod(self.report_dir, 0o555)
+        try:
+            written = self.run_task(self.fake_command(FAKE_COMMIT, "reports/TASK-R4-WRITEFAIL.md", "x\n"))
+        finally:
+            os.chmod(self.report_dir, 0o755)
+        self.assertEqual(written["task_state"], "FAILED")
+        self.assertEqual(self.repository.get_task("TASK-R4-WRITEFAIL")["state"], "FAILED")
+        self.assertFalse((self.report_dir / "TASK-R4-WRITEFAIL.json").exists())
+        leftover = list(self.report_dir.glob(".execution-report-*.tmp"))
+        self.assertEqual(leftover, [])
+        self._enable_executor()
+
+        self.drop(self.envelope("TASK-R4-TRUNC", "reports/TASK-R4-TRUNC.md", "x"))
+        self.importer.ingest_once()
+        truncated = self.run_task(
+            self.fake_command(FAKE_COMMIT, "reports/TASK-R4-TRUNC.md", "x\n"),
+            runner_cls=TruncateReportRunner,
+        )
+        self.assertEqual(truncated["task_state"], "FAILED")
+        self.assertEqual(self.repository.get_task("TASK-R4-TRUNC")["state"], "FAILED")
+        with self.assertRaises(TaskMergeError):
+            self.merger().merge("TASK-R4-TRUNC", "merge-trunc")
+        self._enable_executor()
+
+        self.drop(self.envelope("TASK-R4-REPLACE", "reports/TASK-R4-REPLACE.md", "x"))
+        self.importer.ingest_once()
+        replaced = self.run_task(
+            self.fake_command(FAKE_COMMIT, "reports/TASK-R4-REPLACE.md", "x\n"),
+            runner_cls=ReplaceReportRunner,
+        )
+        self.assertEqual(replaced["task_state"], "FAILED")
+        self.assertEqual(self.repository.get_task("TASK-R4-REPLACE")["state"], "FAILED")
+        self._enable_executor()
+
+        self.drop(self.envelope("TASK-R4-COMPLETE", "reports/TASK-R4-COMPLETE.md", "x"))
+        self.importer.ingest_once()
+        poisoned = self.run_task(
+            self.fake_command(FAKE_COMMIT, "reports/TASK-R4-COMPLETE.md", "x\n"),
+            runner_cls=StaleCompleteRunner,
+        )
+        self.assertEqual(poisoned["task_state"], "FAILED")
+        self.assertEqual(self.repository.get_task("TASK-R4-COMPLETE")["state"], "FAILED")
+        self.assertNotEqual(self.repository.get_task("TASK-R4-COMPLETE")["state"], "REVIEW")
+        self.assertEqual(self.dispatcher.get_project_baseline("control-panel")["baseline_ref"], self.head)
+        self.assertEqual(self._head(self.project), self.head)
+        self.assert_runtime_frozen()
+
+    def test_merge_crash_before_merge_retries_once(self):
+        relpath = "reports/TASK-R4-CRASH-BEFORE.md"
+        self.drop(self.envelope("TASK-R4-CRASH-BEFORE", relpath, "x"))
+        self.importer.ingest_once()
+        result = self.run_task(self.fake_command(FAKE_COMMIT, relpath, "ok\n"))
+        self.assertEqual(result["task_state"], "REVIEW")
+        self.review_inbox.drop(self.decide(result))
+        before = self._head(self.project)
+        with self.assertRaises(TaskMergeError):
+            self._crash_merger("before_merge").merge("TASK-R4-CRASH-BEFORE", "merge-crash-before")
+        self.assertEqual(self._head(self.project), before)
+        self.assertFalse(self.review_inbox.is_consumed("TASK-R4-CRASH-BEFORE"))
+        recovered = self.merger().merge("TASK-R4-CRASH-BEFORE", "merge-crash-before-retry")
+        self.assertEqual(recovered["status"], "merged")
+        self.assertEqual(self._rev_count(before, recovered["commitRef"]), 1)
+        self.assertTrue(self.review_inbox.is_consumed("TASK-R4-CRASH-BEFORE"))
+        self.assert_runtime_frozen()
+
+    def test_merge_crash_after_merge_completes_without_second_merge(self):
+        relpath = "reports/TASK-R4-CRASH-AFTER.md"
+        self.drop(self.envelope("TASK-R4-CRASH-AFTER", relpath, "x"))
+        self.importer.ingest_once()
+        result = self.run_task(self.fake_command(FAKE_COMMIT, relpath, "ok\n"))
+        self.assertEqual(result["task_state"], "REVIEW")
+        self.review_inbox.drop(self.decide(result))
+        before = self._head(self.project)
+        with self.assertRaises(TaskMergeError):
+            self._crash_merger("after_merge").merge("TASK-R4-CRASH-AFTER", "merge-crash-after")
+        self.assertEqual(self._head(self.project), result["after_ref"])
+        self.assertFalse(self.review_inbox.is_consumed("TASK-R4-CRASH-AFTER"))
+        self.assertFalse((self.inbox / "TASK-R4-CRASH-AFTER.merge.json").exists())
+        recovered = self.merger().merge("TASK-R4-CRASH-AFTER", "merge-crash-after-retry")
+        self.assertEqual(recovered["commitRef"].lower(), result["after_ref"].lower())
+        self.assertEqual(self._rev_count(before, recovered["commitRef"]), 1)
+        self.assertTrue(self.review_inbox.is_consumed("TASK-R4-CRASH-AFTER"))
+        self.assert_runtime_frozen()
+
+    def test_merge_crash_after_receipt_consumes_without_second_merge(self):
+        relpath = "reports/TASK-R4-CRASH-RECEIPT.md"
+        self.drop(self.envelope("TASK-R4-CRASH-RECEIPT", relpath, "x"))
+        self.importer.ingest_once()
+        result = self.run_task(self.fake_command(FAKE_COMMIT, relpath, "ok\n"))
+        self.assertEqual(result["task_state"], "REVIEW")
+        self.review_inbox.drop(self.decide(result))
+        before = self._head(self.project)
+        with self.assertRaises(TaskMergeError):
+            self._crash_merger("after_receipt").merge("TASK-R4-CRASH-RECEIPT", "merge-crash-receipt")
+        self.assertEqual(self._head(self.project), result["after_ref"])
+        self.assertFalse(self.review_inbox.is_consumed("TASK-R4-CRASH-RECEIPT"))
+        self.assertTrue((self.inbox / "TASK-R4-CRASH-RECEIPT.merge.json").exists())
+        recovered = self.merger().merge("TASK-R4-CRASH-RECEIPT", "merge-crash-receipt-retry")
+        self.assertEqual(recovered["commitRef"].lower(), result["after_ref"].lower())
+        self.assertEqual(self._rev_count(before, recovered["commitRef"]), 1)
+        self.assertTrue(self.review_inbox.is_consumed("TASK-R4-CRASH-RECEIPT"))
         self.assert_runtime_frozen()
 
 

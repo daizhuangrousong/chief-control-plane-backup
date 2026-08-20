@@ -54,13 +54,8 @@ class TaskMerger:
             raise TaskMergeError("merge requires a task id from the Chief inbox, not a caller-supplied decision")
         if not isinstance(request_id, str) or not request_id.strip():
             raise TaskMergeError("request id is required")
-        existing = self._receipt(task_id)
-        if existing is not None:
-            if existing.get("requestId") == request_id:
-                return existing
-            raise TaskMergeError("duplicate review/merge is not allowed")
         try:
-            decision = self.review_inbox.load(task_id)
+            decision = self.review_inbox.read(task_id)
         except ChiefReviewDecisionError as error:
             raise TaskMergeError(str(error)) from error
         if decision["actor"] not in self.allowed_review_actors:
@@ -83,10 +78,11 @@ class TaskMerger:
         branch = occupancy["branch"]
         try:
             branch_head = git_checked(self.project_root, "rev-parse", branch)
+            target_head = git_checked(self.project_root, "rev-parse", "HEAD")
+            current = git_checked(self.project_root, "rev-parse", "--abbrev-ref", "HEAD")
+            porcelain = git_checked(self.project_root, "status", "--porcelain")
         except GitError as error:
-            raise TaskMergeError("task branch is missing") from error
-        if branch_head.lower() != decision["commitRef"].lower():
-            raise TaskMergeError("conflicting commit on the task branch")
+            raise TaskMergeError("could not inspect merge target") from error
         lease = self.repository.get_task_lease(decision["leaseId"])
         if lease is None or lease["task_id"] != task["id"]:
             raise TaskMergeError("review lease does not belong to the task")
@@ -110,36 +106,103 @@ class TaskMerger:
             )
         except ExecutionContractError as error:
             raise TaskMergeError(str(error)) from error
-        current = git_checked(self.project_root, "rev-parse", "--abbrev-ref", "HEAD")
+        approved = decision["commitRef"].lower()
+        already_on_target = target_head.lower() == approved
+        if not already_on_target and branch_head.lower() != approved:
+            raise TaskMergeError("conflicting commit on the task branch")
         if current != self.target_branch:
             raise TaskMergeError("project HEAD is not the merge target branch")
-        porcelain = git_checked(self.project_root, "status", "--porcelain")
         if porcelain:
             raise TaskMergeError("target branch is dirty")
-        try:
-            self.review_inbox.consume(task_id, decision["sourceHash"])
-        except ChiefReviewDecisionError as error:
-            raise TaskMergeError(str(error)) from error
+        existing = self._receipt(task_id)
+        if existing is not None:
+            self._assert_receipt_consistent(existing, decision, task, lease)
+            if target_head.lower() != str(existing.get("commitRef") or "").lower():
+                raise TaskMergeError("merge receipt does not match target HEAD")
+            self._finish_consume(task_id, decision["sourceHash"])
+            self.pool.mark_phase(task["id"], "merged")
+            return existing
+        if decision.get("consumed") and not already_on_target:
+            raise TaskMergeError("review decision was consumed but the merge is missing")
+        if already_on_target:
+            receipt = self._build_receipt(task, lease, branch, approved, request_id, decision["sourceHash"])
+            self._write_receipt(task["id"], receipt)
+            self._crash("after_receipt")
+            self._finish_consume(task_id, decision["sourceHash"])
+            self.pool.mark_phase(task["id"], "merged")
+            return receipt
+        self._crash("before_merge")
         try:
             git_checked(self.project_root, "merge", "--ff-only", branch)
         except GitError as error:
             raise TaskMergeError("local merge failed: {}".format(error)) from error
-        merged = git_checked(self.project_root, "rev-parse", "HEAD")
-        receipt = {
+        try:
+            merged = git_checked(self.project_root, "rev-parse", "HEAD")
+        except GitError as error:
+            raise TaskMergeError("could not read merge HEAD") from error
+        if merged.lower() != approved:
+            raise TaskMergeError("merge did not land on the approved commit")
+        self._crash("after_merge")
+        receipt = self._build_receipt(task, lease, branch, merged, request_id, decision["sourceHash"])
+        self._write_receipt(task["id"], receipt)
+        self._crash("after_receipt")
+        self._finish_consume(task_id, decision["sourceHash"])
+        self.pool.mark_phase(task["id"], "merged")
+        return receipt
+
+    def _crash(self, _point: str) -> None:
+        return None
+
+    def _finish_consume(self, task_id: str, source_hash: str) -> None:
+        try:
+            self.review_inbox.consume(task_id, source_hash)
+        except ChiefReviewDecisionError as error:
+            raise TaskMergeError(str(error)) from error
+
+    def _build_receipt(
+        self,
+        task: Dict[str, Any],
+        lease: Dict[str, Any],
+        branch: str,
+        commit_ref: str,
+        request_id: str,
+        decision_hash: str,
+    ) -> Dict[str, Any]:
+        return {
             "status": "merged",
             "taskId": task["id"],
             "taskVersion": task["version"],
-            "commitRef": merged,
+            "commitRef": commit_ref,
             "branch": branch,
             "targetBranch": self.target_branch,
             "leaseId": lease["id"],
             "requestId": request_id,
             "merger": self.executor_id,
+            "decisionHash": decision_hash,
         }
-        if self.receipt_dir is not None:
-            atomic_write_json(self.receipt_dir / "{}.merge.json".format(task["id"]), receipt)
-        self.pool.mark_phase(task["id"], "merged")
-        return receipt
+
+    def _assert_receipt_consistent(
+        self,
+        receipt: Dict[str, Any],
+        decision: Dict[str, Any],
+        task: Dict[str, Any],
+        lease: Dict[str, Any],
+    ) -> None:
+        if str(receipt.get("taskId")) != task["id"]:
+            raise TaskMergeError("merge receipt taskId mismatch")
+        if int(receipt.get("taskVersion") or 0) != int(task["version"]):
+            raise TaskMergeError("merge receipt taskVersion mismatch")
+        if str(receipt.get("leaseId")) != lease["id"]:
+            raise TaskMergeError("merge receipt leaseId mismatch")
+        if str(receipt.get("commitRef") or "").lower() != decision["commitRef"].lower():
+            raise TaskMergeError("merge receipt commit mismatch")
+        if receipt.get("decisionHash") and receipt.get("decisionHash") != decision.get("sourceHash"):
+            raise TaskMergeError("merge receipt decision hash mismatch")
+
+    def _write_receipt(self, task_id: str, receipt: Dict[str, Any]) -> None:
+        if self.receipt_dir is None:
+            return
+        atomic_write_json(self.receipt_dir / "{}.merge.json".format(task_id), receipt)
 
     def _receipt(self, task_id: str) -> Optional[Dict[str, Any]]:
         if self.receipt_dir is None:

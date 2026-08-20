@@ -7,6 +7,7 @@
 - Task execution uses an isolated git worktree/branch created from the registered baseline, never the resident runtime checkout.
 - A single-commit contract, independent merger, and baseline promoter keep review/merge/promotion off the task executor. Same-hash outbox files are consumed once.
 - R4.1: executor `workspaceRoots` is only the leased worktree; `TaskWorktreePool` rejects `runtime == project` and nested runtime/pool; review identity comes from a runtime Chief inbox, not caller strings; the merger reloads and recomputes durable execution evidence before fast-forward.
+- R4.2: executor stdout must be a real `executor-result/1.0.0` envelope; reports persist before REVIEW; Chief decisions are consumed only after a confirmed fast-forward, with idempotent crash recovery. Tier 1 same-user only; R5 Eval repo is the next allowed attach.
 
 ### R3 — Chief document dispatch activation
 

@@ -1,9 +1,13 @@
-# Execution lifecycle (R4 / R4.1)
+# Execution lifecycle (R4 / R4.2)
 
 Resident runtime code stays on a dedicated Control Plane worktree. Each task gets its own
 `git worktree` and `task/<taskId>` branch created from the Dispatcher-registered
 baseline. The daemon never uses its own checkout as the executor cwd, and never
 puts the live project path in the executor payload.
+
+R4.2 is Owner Tier 1: same macOS user, prevent mistakes and false greens, not a
+malicious-process sandbox. R5 may attach a new Eval repository only. Do not connect
+Julius, Director, databases, secrets, or deploy from this lifecycle.
 
 ## Isolation
 
@@ -21,20 +25,27 @@ checkout, and registered baseline were not modified.
 
 After the injected executor exits 0, the runner requires exactly one commit on the
 leased worktree, a clean tree, `git diff --check` pass, and changed paths inside
-`task.scope`. It then atomically persists an `execution-report/1.0.0` under the
-runtime control directory (not the lease tree), binding task/version/lease,
-before/after, changed paths, commit count, diff-check, tests, and acceptance
-checks. Failures call `dispatcher.fail` and never merge or promote. Success
-stops at REVIEW. The task executor cannot mark DONE, merge, update baseline, or
-replace the durable report.
+`task.scope`. It then parses a strict `executor-result/1.0.0` envelope from
+stdout: bound to task/version/lease/commit, with acceptance checks in task order.
+Command checks must include argv and the real exit code; the runner replays them
+and never invents `pass`. Missing, ordered-wrong, empty, failed, plain-text, or
+commit-mismatched results fail the lease.
+
+Only after that envelope and Git contract succeed does the runner atomically
+persist `execution-report/1.0.0` under the runtime control directory, reload it,
+and then `complete` into REVIEW. A persist/reload/complete failure fails the
+lease; leftover temp files are not mergeable evidence.
 
 ## Chief review, merger, promoter
 
 Chief drops `chief-review-decision/1.0.0` into a runtime-side inbox. Caller
 strings such as `actor=chief` or `caller_executor_id=merge-r4` are not identity.
-`TaskMerger.merge(task_id, request_id)` loads that inbox, consumes the decision
-once, and re-runs the Git contract against the occupancy worktree before a local
-fast-forward. Missing, tampered, failed, or empty test evidence fails closed.
+`TaskMerger.merge(task_id, request_id)` re-runs the Git contract and acceptance
+replay, fast-forwards locally, writes the receipt, then consumes the decision.
+If merge fails, the decision stays usable and HEAD/baseline are unchanged. If
+HEAD already equals the approved commit, retry only fills receipt/consume and
+does not merge again.
+
 Merger identity comes from instance config and must not appear in
 `allowedExecutors`. `BaselinePromoter` updates Dispatcher baseline only when the
 target is clean, the merge commit is HEAD, there is no active lease, and runtime

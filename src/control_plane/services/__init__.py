@@ -27,8 +27,8 @@ from .chief_task_ingress import (
 )
 from .task_worktree import TaskWorktreeError, TaskWorktreePool
 from .execution_contract import (
-    EXECUTION_REPORT_VERSION, ExecutionContractError, inspect_execution,
-    load_execution_report, persist_execution_report, revalidate_execution_report,
+    EXECUTION_REPORT_VERSION, EXECUTOR_RESULT_VERSION, ExecutionContractError, inspect_execution,
+    load_execution_report, parse_executor_result, persist_execution_report, revalidate_execution_report,
 )
 from .chief_review_decision import (
     DECISION_VERSION, ChiefReviewDecisionError, ChiefReviewInbox, parse_review_decision,
@@ -53,8 +53,8 @@ __all__ = [
     "CursorDaemon", "CursorDaemonError", "CursorLaunchError", "parse_executor_command",
     "ChiefTaskImporter", "ChiefTaskIngressError", "ChiefTaskReporter", "atomic_write_json",
     "TaskWorktreeError", "TaskWorktreePool",
-    "EXECUTION_REPORT_VERSION", "ExecutionContractError", "inspect_execution",
-    "load_execution_report", "persist_execution_report", "revalidate_execution_report",
+    "EXECUTION_REPORT_VERSION", "EXECUTOR_RESULT_VERSION", "ExecutionContractError", "inspect_execution",
+    "load_execution_report", "parse_executor_result", "persist_execution_report", "revalidate_execution_report",
     "DECISION_VERSION", "ChiefReviewDecisionError", "ChiefReviewInbox", "parse_review_decision",
     "TaskMergeError", "TaskMerger",
     "BaselinePromotionError", "BaselinePromoter",

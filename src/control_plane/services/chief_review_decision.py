@@ -97,11 +97,12 @@ class ChiefReviewInbox:
         _atomic_write_json(path, parsed)
         return path
 
-    def load(self, task_id: str) -> Dict[str, Any]:
+    def is_consumed(self, task_id: str) -> bool:
+        return self.consumed_path(task_id).exists()
+
+    def read(self, task_id: str) -> Dict[str, Any]:
         if not TASK_ID_PATTERN.fullmatch(task_id or ""):
             raise ChiefReviewDecisionError("task id is invalid")
-        if self.consumed_path(task_id).exists():
-            raise ChiefReviewDecisionError("review decision already consumed")
         path = self.decision_path(task_id)
         if path.is_symlink() or not path.is_file():
             raise ChiefReviewDecisionError("review decision is missing from the Chief inbox")
@@ -114,12 +115,30 @@ class ChiefReviewInbox:
         if parsed["taskId"] != task_id:
             raise ChiefReviewDecisionError("review decision taskId mismatch")
         parsed["sourceHash"] = hashlib.sha256(raw).hexdigest()
+        if self.is_consumed(task_id):
+            try:
+                sidecar = json.loads(self.consumed_path(task_id).read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+                raise ChiefReviewDecisionError("review consume sidecar is unreadable") from error
+            if not isinstance(sidecar, dict) or sidecar.get("sourceHash") != parsed["sourceHash"]:
+                raise ChiefReviewDecisionError("review consume sidecar does not match the decision")
+            parsed["consumed"] = True
+        else:
+            parsed["consumed"] = False
+        return parsed
+
+    def load(self, task_id: str) -> Dict[str, Any]:
+        parsed = self.read(task_id)
+        if parsed.get("consumed"):
+            raise ChiefReviewDecisionError("review decision already consumed")
         return parsed
 
     def consume(self, task_id: str, source_hash: str) -> None:
-        parsed = self.load(task_id)
+        parsed = self.read(task_id)
         if parsed.get("sourceHash") != source_hash:
             raise ChiefReviewDecisionError("review decision changed before consume")
+        if parsed.get("consumed"):
+            return
         _atomic_write_json(self.consumed_path(task_id), {
             "schemaVersion": CONSUMED_VERSION,
             "taskId": task_id,
