@@ -65,8 +65,8 @@ def build_runner_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def parse_runner_argv(argv: Sequence[str]) -> argparse.Namespace:
-    args = build_runner_parser().parse_args(list(argv))
+def parse_runner_argv(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
+    args = build_runner_parser().parse_args(None if argv is None else list(argv))
     args.executor_command = parse_executor_command(args.executor_command)
     if args.reject_limit < 1:
         raise CursorLaunchError("reject-limit must be >= 1")

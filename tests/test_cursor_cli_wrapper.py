@@ -392,6 +392,28 @@ class CursorLaunchContractTest(unittest.TestCase):
         self.assertEqual(command[2], "--runner-config")
         self.assertNotIn("--project", command)
 
+    def test_parse_runner_argv_none_reads_process_args(self):
+        config_path = self.root / "projects.local.json"
+        log_file = self.root / "runner.log"
+        halt_file = self.root / "halt.json"
+        config_path.write_text("{}", encoding="utf-8")
+        process_argv = [
+            "run_cursor_runner.py",
+            "--config", str(config_path),
+            "--executor-id", "cursor-r1",
+            "--executor-command", json.dumps(["/usr/bin/python3", "/wrapper.py"]),
+            "--project", "control-panel",
+            "--log-file", str(log_file),
+            "--halt-file", str(halt_file),
+            "--max-cycles", "1",
+        ]
+        from unittest import mock
+        with mock.patch.object(sys, "argv", process_argv):
+            args = parse_runner_argv(None)
+        self.assertEqual(args.project, "control-panel")
+        self.assertEqual(args.max_cycles, 1)
+        self.assertEqual(args.executor_command, ["/usr/bin/python3", "/wrapper.py"])
+
     def test_plist_syntax_keepalive_and_equivalent_argv_idle(self):
         checked = subprocess.run(["plutil", "-lint", str(self.example)], capture_output=True, text=True)
         self.assertEqual(checked.returncode, 0, checked.stderr)
@@ -459,6 +481,69 @@ class CursorLaunchContractTest(unittest.TestCase):
         ).run(max_cycles=args.max_cycles)
         self.assertEqual(result["status"], "idle")
         self.assertFalse(marker.exists())
+
+    def test_real_script_entry_with_none_argv_idles_empty_queue(self):
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        subprocess.run(["git", "-C", str(self.root), "config", "user.email", "r12@example.invalid"], check=True)
+        subprocess.run(["git", "-C", str(self.root), "config", "user.name", "R12"], check=True)
+        (self.root / "README").write_text("workspace\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.root), "add", "README"], check=True)
+        subprocess.run(["git", "-C", str(self.root), "commit", "-qm", "fixture"], check=True)
+        marker = self.root / "called"
+        fake = self.root / "fake.py"
+        fake.write_text(
+            "from pathlib import Path\nimport sys\nPath(sys.argv[1]).write_text('called')\n",
+            encoding="utf-8",
+        )
+        config_path = self.root / "projects.local.json"
+        config_path.write_text(json.dumps({
+            "database": str(self.root / "control.sqlite3"),
+            "projects": [{
+                "id": "control-panel", "name": "Panel", "kind": "control_plane", "owner": "Owner",
+                "root": str(self.root), "ledger": "TASKS.md", "status": "STATE.md",
+                "knowledge_roots": [], "enabled_agents": ["knowledge", "observer", "release"],
+            }],
+        }), encoding="utf-8")
+        from control_plane.config import load_settings
+        from control_plane.services import LeaseDispatcher
+        from control_plane.storage import Repository
+        settings = load_settings(str(config_path))
+        repository = Repository(settings.database)
+        repository.migrate()
+        for project in settings.projects:
+            repository.upsert_project(project)
+        dispatcher = LeaseDispatcher(repository)
+        dispatcher.register_executor("cursor-r1", ["control-panel"], "low")
+        head = subprocess.check_output(["git", "-C", str(self.root), "rev-parse", "HEAD"], text=True).strip()
+        dispatcher.set_project_baseline("control-panel", head, "planner")
+        log_file = self.root / "runner.log"
+        halt_file = self.root / "halt.json"
+        argv = [
+            "--config", str(config_path),
+            "--executor-id", "cursor-r1",
+            "--executor-command", json.dumps([sys.executable, str(fake), str(marker)]),
+            "--project", "control-panel",
+            "--idle-seconds", "0",
+            "--log-file", str(log_file),
+            "--halt-file", str(halt_file),
+            "--max-cycles", "1",
+        ]
+        script = self.repo / "scripts" / "run_cursor_runner.py"
+        env = dict(os.environ)
+        env["PYTHONPATH"] = str(self.repo / "src")
+        completed = subprocess.run(
+            [sys.executable, str(script), *argv],
+            capture_output=True, text=True, env=env, cwd=str(self.root), timeout=20,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertNotIn("TypeError", completed.stderr)
+        self.assertTrue(log_file.is_file())
+        log_text = log_file.read_text(encoding="utf-8")
+        self.assertIn("idle: no eligible READY task", log_text)
+        self.assertNotIn("rejected", log_text)
+        self.assertNotIn("halted", log_text)
+        self.assertFalse(marker.exists())
+        self.assertFalse(halt_file.exists())
 
 
 if __name__ == "__main__":
