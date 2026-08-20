@@ -8,6 +8,7 @@
 - Added `cursor-daemon`: one Control Plane project, one task at a time, idle when the queue is empty, rotating logs, no credential files.
 - CLI subprocesses receive a filtered env allowlist; `--executor-command` is a JSON argv array; identical permanent rejections halt for Chief.
 - Missing CLI authentication, timeout and non-zero exits fail closed. LaunchAgent remains disabled until the authorized real pilot passes.
+- R1.2: `parse_runner_argv(None)` reads process args so the user LaunchAgent can idle on an empty queue.
 
 ### R0 — Isolated Cursor Adapter
 

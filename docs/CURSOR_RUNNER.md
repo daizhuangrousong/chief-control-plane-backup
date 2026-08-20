@@ -32,6 +32,7 @@ PYTHONPATH=src python3 -m control_plane.main --config /absolute/config/projects.
 ## Daemon
 
 The user-level LaunchAgent template is `scripts/com.pojian.chief-cursor-runner.plist.example`.
+`parse_runner_argv(None)` must read process arguments (LaunchAgent calls `main()` with no argv list).
 It may be enabled only after the R1 reverse gates and the single real pilot have passed.
 The plist must contain PYTHONPATH and explicit program arguments only — never credentials.
 A halt file at `--halt-file` means the runner is waiting for Chief; delete it only after the
