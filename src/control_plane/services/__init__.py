@@ -25,6 +25,11 @@ from .cursor_launch import CursorLaunchError, parse_executor_command
 from .chief_task_ingress import (
     ChiefTaskImporter, ChiefTaskIngressError, ChiefTaskReporter, atomic_write_json,
 )
+from .task_worktree import TaskWorktreeError, TaskWorktreePool
+from .execution_contract import ExecutionContractError, inspect_execution
+from .chief_review_decision import DECISION_VERSION, ChiefReviewDecisionError, parse_review_decision
+from .task_merger import TaskMergeError, TaskMerger
+from .baseline_promoter import BaselinePromotionError, BaselinePromoter
 
 __all__ = [
     "DecisionPolicyEngine", "IllegalTaskTransitionError", "Orchestrator", "POLICY_VERSION",
@@ -42,4 +47,9 @@ __all__ = [
     "CursorCliWrapperError", "load_runner_config", "parse_task_payload",
     "CursorDaemon", "CursorDaemonError", "CursorLaunchError", "parse_executor_command",
     "ChiefTaskImporter", "ChiefTaskIngressError", "ChiefTaskReporter", "atomic_write_json",
+    "TaskWorktreeError", "TaskWorktreePool",
+    "ExecutionContractError", "inspect_execution",
+    "DECISION_VERSION", "ChiefReviewDecisionError", "parse_review_decision",
+    "TaskMergeError", "TaskMerger",
+    "BaselinePromotionError", "BaselinePromoter",
 ]

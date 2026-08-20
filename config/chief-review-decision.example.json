@@ -1,0 +1,10 @@
+{
+  "schemaVersion": "chief-review-decision/1.0.0",
+  "taskId": "TASK-R4-EXAMPLE",
+  "taskVersion": 5,
+  "commitRef": "0123456789abcdef0123456789abcdef01234567",
+  "leaseId": "00000000-0000-0000-0000-000000000000",
+  "outcome": "approve_merge",
+  "actor": "chief",
+  "reasons": ["Fake example only. Do not merge production."]
+}

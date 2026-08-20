@@ -1,12 +1,10 @@
-# PROGRESS · R3 回滚到 R1 safe-idle
+# PROGRESS · R4 可持续执行生命周期
 
-- 目标：停止不可持续的 R3 激活，恢复已验证 R1 idle。真实 Cursor/飞书增量必须为 0。停在 Chief REVIEW。
-- 工作树：`/Users/pojian/repos/director-control-plane-r2-ingress` 分支 `chief-task-ingress-r2`
-- 回滚前：HEAD=`39b2e20`；R3 baseline=`f56f896`（未更新）；READY=0；Cursor 累计=2
-- 回滚前 labels：ingress pid=`22766` runs=1 forks=468；R3 runner pid=`22924` runs=1 forks=3
-- 备份 plist hash 核验通过：`1f5270208c68c41b84dbae11f24bbf955067e7ae4fd432a9cbca1b05485a8c1a`
-- 回滚后：仅 R1 `com.pojian.chief-cursor-runner` pid=`26003` runs=1 idle；`com.pojian.chief-task-ingress` 不存在
-- 恢复后 live plist 与备份字节一致；无 `--inbox-dir`、无 R2 worktree 路径
-- R3 证据保留：PILOT=REVIEW v5，REVERSE=BLOCKED v2；outbox/inbox mtime 已停止变化
-- 本任务 Cursor `--print`=0，飞书=0；未改代码、未改 baseline、未跑新任务
-- 等待：Chief REVIEW。不得重新启用 R3。
+- 目标：任务文档→独立 worktree→执行/测试→原子 commit→Chief REVIEW→独立 merger/baseline 晋升。不停在真实 Cursor，不启用服务。停在 Chief REVIEW。
+- 工作树：`/Users/pojian/repos/director-control-plane-r4-lifecycle` 分支 `chief-task-lifecycle-r4` 从 `79b4557` 拉出
+- 任务 0：main=`fe5062f`；R1=`b7e17bf` `cursor-runner-r1-bootstrap`；R3=`79b4557` `chief-task-ingress-r2`；R3 baseline=`f56f896` HEAD=`79b4557`
+- R1 label=`gui/501/com.pojian.chief-cursor-runner` pid=`26003` idle；ingress 不存在。R3 DB/outbox/inbox 只读未改。
+- 测试基线：R3 131 / 0 fail / 0 skip。本任务用临时仓+fake executor，不调用真实 Cursor/飞书。
+- 红→绿：脏 worktree / 越界 / 空提交 / 多提交 / 自批 / 未授权 / 冲突 commit / 重复 merge / 健康失败 / 旧 outbox 均 fail closed，旧 baseline 保持；Task A 晋升后 Task B 从新 baseline 完成。
+- 测试：134 / 0 fail / 0 skip；`git diff --check` 通过。Executor 连续任务 2 次执行 / 2 次 merge / 2 次 promotion。
+- 等待：Chief REVIEW。不得启用 LaunchAgent、merge 本分支或 push。

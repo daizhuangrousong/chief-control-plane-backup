@@ -3,6 +3,27 @@ from pathlib import Path
 from typing import List, Optional
 
 
+class GitError(RuntimeError):
+    pass
+
+
+def git_checked(root: Path, *args: str, timeout: int = 30) -> str:
+    """Run git as an argv list. Never uses a shell, and never swallows failures."""
+    root = Path(root)
+    completed = subprocess.run(
+        ["git", "-C", str(root), *args],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+        shell=False,
+    )
+    if completed.returncode != 0:
+        message = (completed.stderr or completed.stdout or "git command failed").strip()
+        raise GitError(message)
+    return (completed.stdout or "").strip()
+
+
 def git(root: Path, *args: str, timeout: int = 10) -> Optional[str]:
     try:
         result = subprocess.run(

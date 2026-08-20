@@ -28,8 +28,10 @@ from .task_registry import TASK_ID_PATTERN, TaskRegistry, TaskValidationError, t
 ENVELOPE_VERSION = "chief-task-envelope/1.0.0"
 RECEIPT_VERSION = "chief-task-receipt/1.0.0"
 IDENTITY_VERSION = "chief-task-identity/1.0.0"
+CONSUMED_VERSION = "chief-task-consumed/1.0.0"
 ENVELOPE_FIELDS = {"schemaVersion", "task", "facts"}
 IDENTITY_FIELDS = {"schemaVersion", "taskId", "originalHash"}
+CONSUMED_FIELDS = {"schemaVersion", "taskId", "originalHash"}
 INGRESS_CONFIG_FIELDS = {"outboxDir", "inboxDir", "allowedProjects", "maxBytes", "idleSeconds"}
 INGRESS_CONFIG_REQUIRED = {"outboxDir", "inboxDir", "allowedProjects", "maxBytes"}
 DEFAULT_MAX_BYTES = 262144
@@ -197,6 +199,7 @@ def short_receipt(
     lease_id: Optional[str] = None,
     original_hash: Optional[str] = None,
     attempted_hash: Optional[str] = None,
+    runner_status: Optional[str] = None,
 ) -> Dict[str, Any]:
     return {
         "schemaVersion": RECEIPT_VERSION,
@@ -206,6 +209,8 @@ def short_receipt(
         "attemptedHash": attempted_hash,
         "taskVersion": task_version,
         "state": state,
+        "taskState": state,
+        "runnerStatus": runner_status or state,
         "matchedRules": list(matched_rules),
         "observedAt": _utc_now(),
         "leaseId": lease_id,
@@ -250,6 +255,7 @@ def write_identity(inbox: Path, task_id: str, original_hash: str) -> Dict[str, A
     if existing is not None:
         if existing["originalHash"] != original_hash:
             raise ChiefTaskIngressError("identity sidecar originalHash mismatch")
+        write_consumed(inbox, task_id, original_hash)
         return existing
     payload = {
         "schemaVersion": IDENTITY_VERSION,
@@ -257,6 +263,47 @@ def write_identity(inbox: Path, task_id: str, original_hash: str) -> Dict[str, A
         "originalHash": original_hash,
     }
     atomic_write_json(identity_path(inbox, task_id), payload)
+    write_consumed(inbox, task_id, original_hash)
+    return payload
+
+
+def consumed_path(inbox: Path, task_id: str) -> Path:
+    return Path(inbox) / "{}.consumed.json".format(task_id)
+
+
+def read_consumed(inbox: Path, task_id: str) -> Optional[Dict[str, Any]]:
+    path = consumed_path(inbox, task_id)
+    if not path.exists():
+        return None
+    if path.is_symlink() or not path.is_file():
+        raise ChiefTaskIngressError("consumed sidecar must be a regular file")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as error:
+        raise ChiefTaskIngressError("consumed sidecar is unreadable") from error
+    if not isinstance(payload, dict):
+        raise ChiefTaskIngressError("consumed sidecar is invalid")
+    unknown = sorted(set(payload) - CONSUMED_FIELDS)
+    if unknown:
+        raise ChiefTaskIngressError("consumed sidecar has unknown fields")
+    digest = str(payload.get("originalHash") or "").strip().lower()
+    if payload.get("schemaVersion") != CONSUMED_VERSION or payload.get("taskId") != task_id or not _sha256_hex(digest):
+        raise ChiefTaskIngressError("consumed sidecar is invalid")
+    return {"schemaVersion": CONSUMED_VERSION, "taskId": task_id, "originalHash": digest}
+
+
+def write_consumed(inbox: Path, task_id: str, original_hash: str) -> Dict[str, Any]:
+    existing = read_consumed(inbox, task_id)
+    if existing is not None:
+        if existing["originalHash"] != original_hash:
+            raise ChiefTaskIngressError("consumed sidecar originalHash mismatch")
+        return existing
+    payload = {
+        "schemaVersion": CONSUMED_VERSION,
+        "taskId": task_id,
+        "originalHash": original_hash,
+    }
+    atomic_write_json(consumed_path(inbox, task_id), payload)
     return payload
 
 
@@ -280,6 +327,7 @@ class ChiefTaskReporter:
         error: Optional[str] = None,
         lease_id: Optional[str] = None,
         attempted_hash: Optional[str] = None,
+        runner_status: Optional[str] = None,
     ) -> Dict[str, Any]:
         task = self.repository.get_task(task_id)
         previous = self._previous(task_id)
@@ -300,6 +348,7 @@ class ChiefTaskReporter:
                 lease_id or (previous or {}).get("leaseId"),
                 original_hash=sealed,
                 attempted_hash=attempted_hash,
+                runner_status=runner_status or "BLOCKED",
             )
             return self._write_if_changed(task_id, previous, receipt)
         active_lease = None
@@ -317,6 +366,7 @@ class ChiefTaskReporter:
             lease_id or active_lease or (previous or {}).get("leaseId"),
             original_hash=sealed,
             attempted_hash=attempted_hash,
+            runner_status=runner_status or (previous or {}).get("runnerStatus") or task["state"],
         )
         return self._write_if_changed(task_id, previous, receipt)
 
@@ -330,7 +380,16 @@ class ChiefTaskReporter:
         error = result.get("error") if status in {"rejected", "failed", "halted"} else None
         if status == "halted" and not error:
             error = result.get("reason")
-        return self.publish_task(str(task_id), lease_id=result.get("lease_id"), error=error)
+        runner_status = None
+        if status == "halted":
+            runner_status = "HALTED"
+        elif status == "failed":
+            runner_status = "FAILED"
+        elif result.get("task_state"):
+            runner_status = str(result["task_state"])
+        return self.publish_task(
+            str(task_id), lease_id=result.get("lease_id"), error=error, runner_status=runner_status,
+        )
 
     def list_identity_ids(self) -> List[str]:
         if not self.inbox.is_dir():
@@ -370,6 +429,7 @@ class ChiefTaskReporter:
                 lease_id,
                 error,
                 tuple((previous or {}).get("matchedRules") or []),
+                (previous or {}).get("runnerStatus") if previous and previous.get("state") == task["state"] else task["state"],
             )
             previous_signature = None
             if previous:
@@ -379,6 +439,7 @@ class ChiefTaskReporter:
                     previous.get("leaseId"),
                     previous.get("error"),
                     tuple(previous.get("matchedRules") or []),
+                    previous.get("runnerStatus") or previous.get("state"),
                 )
             if signature == previous_signature:
                 continue
@@ -469,6 +530,29 @@ class ChiefTaskImporter:
             return self._blocked_file(task_id, None, error)
         task: ControlTask = parsed["task"]
         source_hash = parsed["sourceHash"]
+        identity_readable = True
+        try:
+            identity = read_identity(self.inbox, task.id)
+        except ChiefTaskIngressError:
+            identity_readable = False
+            identity = None
+        try:
+            consumed = read_consumed(self.inbox, task.id)
+        except ChiefTaskIngressError:
+            consumed = None
+        if (
+            identity_readable
+            and identity is not None
+            and consumed is not None
+            and consumed["originalHash"] == source_hash
+            and identity["originalHash"] == source_hash
+        ):
+            previous = self.reporter._previous(task.id)
+            if previous is not None:
+                return previous
+            return short_receipt(
+                task.id, source_hash, None, "READY", [], original_hash=source_hash, runner_status="READY",
+            )
         if path.name != "{}.json".format(task.id):
             return self._blocked_file(task.id, source_hash, ChiefTaskIngressError("filename must match task id"))
         try:
@@ -590,6 +674,8 @@ def _receipt_signature(payload: Dict[str, Any]) -> tuple:
         payload.get("attemptedHash"),
         payload.get("sourceHash"),
         payload.get("originalHash"),
+        payload.get("runnerStatus") or payload.get("state"),
+        payload.get("taskState") or payload.get("state"),
     )
 
 

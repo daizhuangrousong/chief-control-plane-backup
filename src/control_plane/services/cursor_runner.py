@@ -10,7 +10,9 @@ from ..adapters.git import git_at_root
 from ..domain.models import ApprovalClass, ready_requires_owner_approval
 from .dispatcher import BaselineConflictError, LeaseConflictError, LeaseDispatcher
 from .project_isolation import ISOLATED_PROJECT_IDS
+from .execution_contract import ExecutionContractError, inspect_execution
 from .task_registry import TaskValidationError
+from .task_worktree import TaskWorktreeError, TaskWorktreePool
 
 
 DEFAULT_EXECUTOR_COMMAND = None
@@ -44,6 +46,7 @@ class CursorRunner:
         timeout_seconds: int = 300,
         log: Optional[Callable[[str], None]] = None,
         isolated_project_ids=None,
+        worktree_pool: Optional[TaskWorktreePool] = None,
     ):
         if isinstance(executor_command, str) or not executor_command:
             raise CursorAdapterError(
@@ -61,6 +64,7 @@ class CursorRunner:
             ISOLATED_PROJECT_IDS if isolated_project_ids is None else frozenset(isolated_project_ids)
         )
         self._project_guard = threading.Lock()
+        self.worktree_pool = worktree_pool
 
     def run_next(self, project_id: Optional[str] = None, request_id: Optional[str] = None) -> Dict[str, Any]:
         request_id = request_id or str(uuid.uuid4())
@@ -76,16 +80,21 @@ class CursorRunner:
     def _claim_and_run(self, task: Dict[str, Any], request_id: str) -> Dict[str, Any]:
         self._assert_safe_to_claim(task)
         baseline = self.dispatcher.get_project_baseline(task["project_id"])
-        workspace = self._workspace(task)
-        git_head = git_at_root(workspace, "rev-parse", "HEAD")
-        if not git_head:
-            raise CursorAdapterError("workspace git HEAD is unknown; refusing to claim")
-        if git_head != baseline["baseline_ref"]:
-            raise CursorAdapterError(
-                "baseline drift: workspace HEAD {} != registered {}".format(
-                    git_head, baseline["baseline_ref"]
+        contract_report = None
+        before_ref = baseline["baseline_ref"]
+        if self.worktree_pool is None:
+            workspace = self._workspace(task)
+            git_head = git_at_root(workspace, "rev-parse", "HEAD")
+            if not git_head:
+                raise CursorAdapterError("workspace git HEAD is unknown; refusing to claim")
+            if git_head != baseline["baseline_ref"]:
+                raise CursorAdapterError(
+                    "baseline drift: workspace HEAD {} != registered {}".format(
+                        git_head, baseline["baseline_ref"]
+                    )
                 )
-            )
+        else:
+            workspace = self._workspace(task)
         with self._project_guard:
             active = self.dispatcher.active_lease_for_project(task["project_id"])
             if active:
@@ -100,6 +109,13 @@ class CursorRunner:
             except LeaseConflictError as error:
                 raise CursorAdapterError("duplicate claim rejected: {}".format(error)) from error
         self.dispatcher.heartbeat(lease["lease_id"], self.executor_id, request_id + ":heartbeat")
+        if self.worktree_pool is not None:
+            try:
+                allocated = self.worktree_pool.allocate(task["id"], baseline["baseline_ref"])
+            except TaskWorktreeError as error:
+                return self._fail(lease, baseline["baseline_ref"], request_id, str(error))
+            workspace = Path(allocated["path"])
+            before_ref = allocated["head"]
         try:
             completed = self._invoke(task, lease, workspace)
         except subprocess.TimeoutExpired as error:
@@ -116,6 +132,14 @@ class CursorRunner:
                 completed.stdout, completed.stderr,
             )
             return self._fail(lease, baseline["baseline_ref"], request_id, reason)
+        if self.worktree_pool is not None:
+            try:
+                contract_report = inspect_execution(
+                    workspace, before_ref, task.get("scope") or [], self.worktree_pool.runtime_root,
+                )
+            except ExecutionContractError as error:
+                return self._fail(lease, baseline["baseline_ref"], request_id, str(error))
+            self.worktree_pool.mark_phase(task["id"], "executed")
         try:
             result = self.dispatcher.complete(
                 lease["lease_id"], self.executor_id, baseline["baseline_ref"], request_id + ":complete",
@@ -128,6 +152,12 @@ class CursorRunner:
         if result.get("task_state") != "REVIEW":
             raise CursorAdapterError("success must enter REVIEW, found {}".format(result.get("task_state")))
         self._emit("completed {} into REVIEW".format(task["id"]))
+        if contract_report is not None:
+            result["before_ref"] = contract_report["beforeRef"]
+            result["after_ref"] = contract_report["afterRef"]
+            result["changed_paths"] = contract_report["changedPaths"]
+            result["diff_check"] = contract_report["diffCheck"]
+            result["execution_report"] = contract_report
         return result
 
     def _assert_safe_to_claim(self, task: Dict[str, Any]) -> None:

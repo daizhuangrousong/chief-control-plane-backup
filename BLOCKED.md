@@ -1,13 +1,13 @@
-# BLOCKED · R3 已回滚
+# BLOCKED · R4 可持续执行生命周期
 
 ## Feishu outbound
 
-BLOCKED: `FEISHU_APP_ID` and `FEISHU_APP_SECRET` are unset. Rollback sent no cards.
+BLOCKED: `FEISHU_APP_ID` and `FEISHU_APP_SECRET` are unset. R4 did not send cards.
 
 ## Real Cursor `--print`
 
-本任务增量 0。累计仍为 2。禁止再调用。
+本任务增量 0。未启用服务。累计仍为历史 2 次（R1+R3），本 worktree 未调用。
 
 ## LaunchAgent
 
-仅 R1 `com.pojian.chief-cursor-runner` running/idle。`com.pojian.chief-task-ingress` 已停止且不在 `gui/501`。R3 不得重新启用。等待 Chief REVIEW。
+R1 `com.pojian.chief-cursor-runner` 保持 safe-idle。R4 未安装/未启用任何 LaunchAgent。R3 importer 保持停止。

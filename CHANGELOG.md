@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### R4 — Sustainable execution lifecycle
+
+- Task execution uses an isolated git worktree/branch created from the registered baseline, never the resident runtime checkout.
+- A single-commit contract, independent merger, and baseline promoter keep review/merge/promotion off the task executor. Same-hash outbox files are consumed once.
+
 ### R3 — Chief document dispatch activation
 
 - The importer/reporter scans identity sidecars and publishes DRAFT/READY/CLAIMED/RUNNING/REVIEW/BLOCKED receipts without changing task state.

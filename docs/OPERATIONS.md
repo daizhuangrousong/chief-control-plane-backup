@@ -60,6 +60,10 @@ R3 wires the reviewed file ingress to the existing Cursor runner. Enable
 at the committed R3 worktree with `--inbox-dir`. Use an isolated R3 sqlite file.
 R1 remains the rollback baseline. See `docs/CHIEF_TASK_INGRESS.md`.
 
+R4 adds isolated task worktrees, a single-commit contract, Chief review decisions,
+an independent merger, and baseline promotion. Do not enable a LaunchAgent for R4.
+See `docs/EXECUTION_LIFECYCLE.md`.
+
 The API binds to `127.0.0.1:8765` by default. Do not bind it to a public interface until authentication,
 request auditing and deployment security have been implemented and reviewed.
 

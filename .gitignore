@@ -35,6 +35,7 @@ config/*.local.json
 var/
 chief-task-outbox/
 chief-task-inbox/
+chief-review-outbox/
 
 # Nested git metadata created by scripts/bootstrap_demo.sh
 fixtures/demo-*/.git/
