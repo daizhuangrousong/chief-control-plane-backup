@@ -1,14 +1,30 @@
 {
-  "runtimeRoot": "/absolute/path/to/r4-runtime-worktree",
-  "projectRoot": "/absolute/path/to/control-panel",
-  "taskWorktreePool": "/absolute/path/to/control-panel/var/task-worktrees",
-  "chiefReviewInbox": "/absolute/path/to/r4-runtime-worktree/chief-review-inbox",
-  "executionReportDir": "/absolute/path/to/r4-runtime-worktree/var/execution-reports",
+  "runtimeRoot": "/absolute/path/to/control-plane-runtime-repo",
+  "projectRoot": "/absolute/path/to/eval-or-target-repo",
+  "poolRoot": "/absolute/path/to/eval-or-target-repo/var/task-worktrees",
+  "stateRoot": "/absolute/path/to/chief-state",
+  "database": "/absolute/path/to/chief-state/control-plane.sqlite3",
+  "chiefReviewInbox": "/absolute/path/to/chief-state/chief-review-inbox",
+  "executionReportDir": "/absolute/path/to/chief-state/execution-reports",
+  "receiptDir": "/absolute/path/to/chief-state/receipts",
+  "occupancyDir": "/absolute/path/to/chief-state/occupancy",
   "executorResultSchemaVersion": "executor-result/1.0.0",
-  "verificationCommands": "Chief-authored argv arrays on the task contract; executor results may not supply argv",
+  "verificationCommands": "Chief-authored argv arrays; merger does not re-run them",
   "targetBranch": "main",
   "mergerId": "merge-r4",
   "allowedReviewActors": ["chief"],
   "threatModel": "tier1-same-user-fallible",
-  "nextAllowedAttach": "eval-r5"
+  "nextAllowedAttach": "eval-r5",
+  "invariants": {
+    "runtimeAndProject": "distinct git repositories; git-common-dir must differ; neither may nest the other",
+    "stateRoot": "ordinary directory outside both git repos and the task pool; no symlink",
+    "poolRoot": "created by the target repo, never equal to projectRoot, shares git-common-dir only with projectRoot"
+  },
+  "cleanupRollback": {
+    "keepRuntimeHead": true,
+    "dropTaskWorktrees": ["git", "-C", "/absolute/path/to/eval-or-target-repo", "worktree", "prune"],
+    "keepRegisteredBaselineOnFailedPromote": true,
+    "doNotResetRuntime": true,
+    "note": "On failure keep the registered target baseline. Do not git reset the runtime repo. Do not enable LaunchAgents."
+  }
 }

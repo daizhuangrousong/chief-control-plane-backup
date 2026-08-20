@@ -14,6 +14,7 @@ from .execution_contract import (
     EXECUTION_REPORT_VERSION, EXECUTOR_RESULT_VERSION, ExecutionContractError,
     execution_report_path, inspect_execution, load_execution_report, parse_executor_result,
     persist_execution_report, run_chief_verification, revalidate_execution_report,
+    assert_safe_chief_commands,
 )
 from .task_registry import TaskValidationError, criteria_of, verification_commands_of
 from .task_worktree import TaskWorktreeError, TaskWorktreePool, assert_control_path
@@ -77,6 +78,7 @@ class CursorRunner:
             self.execution_report_dir = assert_control_path(
                 Path(execution_report_dir), "execution report directory",
                 worktree_pool.runtime_root, worktree_pool.project_root, worktree_pool.pool_root,
+                worktree_pool.state_root,
             )
         else:
             self.execution_report_dir = Path(execution_report_dir).resolve() if execution_report_dir else None
@@ -127,9 +129,10 @@ class CursorRunner:
         host_snapshot = None
         if self.worktree_pool is not None:
             try:
+                assert_safe_chief_commands(verification_commands_of(task.get("acceptance")))
                 allocated = self.worktree_pool.allocate(task["id"], baseline["baseline_ref"])
                 host_snapshot = self.worktree_pool.snapshot_hosts()
-            except TaskWorktreeError as error:
+            except (TaskWorktreeError, ExecutionContractError) as error:
                 return self._fail(lease, baseline["baseline_ref"], request_id, str(error))
             workspace = Path(allocated["path"]).resolve()
             before_ref = allocated["head"]

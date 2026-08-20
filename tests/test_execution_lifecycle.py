@@ -1,11 +1,13 @@
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 
+import control_plane
 from control_plane.config import ProjectConfig
 from control_plane.domain.models import AgentType
 from control_plane.services import (
@@ -14,6 +16,7 @@ from control_plane.services import (
     TaskWorktreePool,
 )
 from control_plane.services.chief_task_ingress import ENVELOPE_VERSION, atomic_write_json
+from control_plane.services.task_worktree import git_common_dir
 from control_plane.storage import Repository
 
 
@@ -239,18 +242,18 @@ class ExecutionLifecycleTest(unittest.TestCase):
         self.base = Path(self.temp.name)
         self.project = self.base / "project"
         self.runtime = self.base / "runtime"
+        self.state = self.base / "state"
+        self._init_runtime()
         self._init_project()
-        subprocess.run(
-            ["git", "-C", str(self.project), "worktree", "add", "-b", "runtime", str(self.runtime), "HEAD"],
-            check=True, capture_output=True, text=True,
-        )
         self.project = self.project.resolve()
         self.runtime = self.runtime.resolve()
+        self.state.mkdir()
+        self.state = self.state.resolve()
         self.head = self._head(self.project)
         self.runtime_head = self._head(self.runtime)
-        self.db = self.project / "r4.sqlite3"
-        self.outbox = self.project / "chief-task-outbox"
-        self.inbox = self.project / "chief-task-inbox"
+        self.db = self.state / "control-plane.sqlite3"
+        self.outbox = self.state / "outbox"
+        self.inbox = self.state / "receipts"
         self.outbox.mkdir()
         self.inbox.mkdir()
         self.pool_root = self.project / "var" / "task-worktrees"
@@ -265,15 +268,16 @@ class ExecutionLifecycleTest(unittest.TestCase):
         self.dispatcher = LeaseDispatcher(self.repository, default_ttl_seconds=30)
         self.dispatcher.register_executor("cursor-r1", ["control-panel"], "low")
         self.dispatcher.set_project_baseline("control-panel", self.head, "planner")
-        self.pool = TaskWorktreePool(self.runtime, self.project, self.pool_root)
+        self.pool = TaskWorktreePool(self.runtime, self.project, self.pool_root, self.state)
         self.review_inbox = ChiefReviewInbox(
-            self.runtime / "chief-review-inbox", self.runtime, self.project, self.pool.pool_root,
+            self.state / "chief-review-inbox", self.runtime, self.project, self.pool.pool_root, self.state,
         )
-        self.report_dir = self.runtime / "var" / "execution-reports"
+        self.report_dir = self.state / "execution-reports"
         self.importer = ChiefTaskImporter(
             self.repository, self.outbox, self.inbox, [self.project_cfg], dispatcher=self.dispatcher,
         )
         self.calls = {"executor": 0, "merge": 0, "promote": 0}
+        self.assertNotEqual(git_common_dir(self.runtime), git_common_dir(self.project))
 
     def tearDown(self):
         if self.project.exists():
@@ -296,16 +300,26 @@ class ExecutionLifecycleTest(unittest.TestCase):
             )
         self.temp.cleanup()
 
+    def _init_git(self, path, name):
+        path.mkdir(parents=True)
+        subprocess.run(["git", "init", "-b", "main", "-q", str(path)], check=True)
+        subprocess.run(["git", "-C", str(path), "config", "user.email", "r4@example.invalid"], check=True)
+        subprocess.run(["git", "-C", str(path), "config", "user.name", name], check=True)
+
+    def _init_runtime(self):
+        self._init_git(self.runtime, "Runtime")
+        src_pkg = Path(control_plane.__file__).resolve().parent
+        dest = self.runtime / "src" / "control_plane"
+        dest.parent.mkdir(parents=True)
+        shutil.copytree(src_pkg, dest, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"))
+        (self.runtime / "README").write_text("control-runtime\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.runtime), "add", "README", "src"], check=True)
+        subprocess.run(["git", "-C", str(self.runtime), "commit", "-qm", "runtime sources"], check=True)
+
     def _init_project(self):
-        self.project.mkdir()
-        subprocess.run(["git", "init", "-b", "main", "-q", str(self.project)], check=True)
-        subprocess.run(["git", "-C", str(self.project), "config", "user.email", "r4@example.invalid"], check=True)
-        subprocess.run(["git", "-C", str(self.project), "config", "user.name", "R4"], check=True)
+        self._init_git(self.project, "R4")
         (self.project / "README").write_text("project\n", encoding="utf-8")
-        (self.project / ".gitignore").write_text(
-            "*.sqlite3\nchief-task-outbox/\nchief-task-inbox/\nvar/\nfake_r4.py\nchief-review-inbox/\n",
-            encoding="utf-8",
-        )
+        (self.project / ".gitignore").write_text("var/\n", encoding="utf-8")
         (self.project / "reports").mkdir()
         (self.project / "reports" / ".keep").write_text("keep\n", encoding="utf-8")
         subprocess.run(["git", "-C", str(self.project), "add", "README", ".gitignore", "reports/.keep"], check=True)
@@ -355,7 +369,7 @@ class ExecutionLifecycleTest(unittest.TestCase):
         return path
 
     def fake_command(self, script, *args):
-        fake = self.project / "fake_r4.py"
+        fake = self.state / "fake_r4.py"
         fake.write_text(script, encoding="utf-8")
         return [sys.executable, str(fake), *args]
 
@@ -416,6 +430,7 @@ class ExecutionLifecycleTest(unittest.TestCase):
         self.assertEqual(receipt_a["runnerStatus"], "REVIEW")
         self.assertEqual(self._head(self.project), self.head)
         merged = self.approve(result_a, "merge-A")
+        self.assertEqual(len(self.last_runner.verification_invocations), 1)
         self.assertEqual(merged["status"], "merged")
         promoter = BaselinePromoter(self.dispatcher, self.project, self.runtime)
         self.calls["promote"] += 1
@@ -434,7 +449,9 @@ class ExecutionLifecycleTest(unittest.TestCase):
         result_b = self.run_task(self.fake_command(FAKE_COMMIT, second_path, "beta\n"))
         self.assertEqual(result_b["task_state"], "REVIEW")
         self.assertEqual(result_b["before_ref"], merged["commitRef"])
+        self.assertEqual(len(self.last_runner.verification_invocations), 1)
         merged_b = self.approve(result_b, "merge-B")
+        self.assertEqual(len(self.last_runner.verification_invocations), 1)
         self.calls["promote"] += 1
         promoted_b = promoter.promote("control-panel", merged_b["commitRef"], "promote-B")
         self.assertEqual(promoted_b["status"], "promoted")
@@ -585,9 +602,33 @@ class ExecutionLifecycleTest(unittest.TestCase):
 
     def test_runtime_equals_project_and_nested_pool_are_rejected(self):
         with self.assertRaises(TaskWorktreeError):
-            TaskWorktreePool(self.project, self.project, self.project / "var" / "other-pool")
+            TaskWorktreePool(self.project, self.project, self.project / "var" / "other-pool", self.base / "state-eq")
         with self.assertRaises(TaskWorktreeError):
-            TaskWorktreePool(self.runtime, self.project, self.runtime / "nested-pool")
+            TaskWorktreePool(self.runtime, self.project, self.runtime / "nested-pool", self.base / "state-nest")
+        shared = self.base / "same-repo-runtime"
+        subprocess.run(
+            ["git", "-C", str(self.project), "worktree", "add", str(shared), "HEAD"],
+            check=True, capture_output=True, text=True,
+        )
+        try:
+            with self.assertRaises(TaskWorktreeError):
+                TaskWorktreePool(shared, self.project, self.project / "var" / "pool-b", self.base / "state-b")
+        finally:
+            subprocess.run(
+                ["git", "-C", str(self.project), "worktree", "remove", "--force", str(shared)],
+                capture_output=True, text=True,
+            )
+        with self.assertRaises(TaskWorktreeError):
+            TaskWorktreePool(self.runtime, self.project, self.pool_root, self.runtime / "inside-runtime")
+        with self.assertRaises(TaskWorktreeError):
+            TaskWorktreePool(self.runtime, self.project, self.pool_root, self.project / "inside-project")
+        empty_runtime = self.base / "empty-runtime"
+        self._init_git(empty_runtime, "Empty")
+        (empty_runtime / "README").write_text("empty\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(empty_runtime), "add", "README"], check=True)
+        subprocess.run(["git", "-C", str(empty_runtime), "commit", "-qm", "empty"], check=True)
+        with self.assertRaises(TaskWorktreeError):
+            TaskWorktreePool(empty_runtime, self.project, self.project / "var" / "pool-c", self.base / "state-c")
         self.assertEqual(self._head(self.project), self.head)
         self.assert_runtime_frozen()
 
@@ -831,7 +872,9 @@ class ExecutionLifecycleTest(unittest.TestCase):
         self.importer.ingest_once()
         result = self.run_task(self.fake_command(FAKE_COMMIT, relpath, "ok\n"))
         self.assertEqual(result["task_state"], "FAILED")
-        self.assertEqual(self.last_runner.verification_invocations, [["touch", "../../../.pwn"]])
+        self.assertEqual(self.last_runner.verification_invocations, [])
+        self.assertFalse((self.project / ".pwn").exists())
+        self.assertFalse((self.runtime / ".pwn").exists())
         self.assertNotEqual(self.repository.get_task("TASK-R4-HOSTCMD")["state"], "REVIEW")
         self.assertEqual(self._head(self.project), self.head)
         self.assert_runtime_frozen()
@@ -845,6 +888,89 @@ class ExecutionLifecycleTest(unittest.TestCase):
         self.assertIsNone(self.repository.get_task("TASK-R4-NOCMD"))
         self.assertEqual(self._head(self.project), self.head)
         self.assert_runtime_frozen()
+
+    def test_eval_target_repo_stops_at_review(self):
+        eval_root = self.base / "eval-target"
+        self._init_git(eval_root, "Eval")
+        (eval_root / "README").write_text("eval\n", encoding="utf-8")
+        (eval_root / ".gitignore").write_text("var/\n", encoding="utf-8")
+        (eval_root / "reports").mkdir()
+        (eval_root / "reports" / ".keep").write_text("keep\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(eval_root), "add", "README", ".gitignore", "reports/.keep"], check=True)
+        subprocess.run(["git", "-C", str(eval_root), "commit", "-qm", "eval fixture"], check=True)
+        eval_root = eval_root.resolve()
+        eval_head = self._head(eval_root)
+        eval_state = (self.base / "eval-state")
+        eval_state.mkdir()
+        eval_state = eval_state.resolve()
+        eval_pool = eval_root / "var" / "task-worktrees"
+        self.assertNotEqual(git_common_dir(self.runtime), git_common_dir(eval_root))
+        eval_db = eval_state / "eval.sqlite3"
+        repository = Repository(eval_db)
+        repository.migrate()
+        project_cfg = ProjectConfig(
+            id="eval", name="Eval", kind="business_agent", owner="Owner",
+            root=eval_root, ledger=eval_root / "PROGRESS.md", status=eval_root / "BLOCKED.md",
+            knowledge_roots=[], enabled_agents=list(AgentType),
+        )
+        repository.upsert_project(project_cfg)
+        dispatcher = LeaseDispatcher(repository, default_ttl_seconds=30)
+        dispatcher.register_executor("cursor-r1", ["eval"], "low")
+        dispatcher.set_project_baseline("eval", eval_head, "planner")
+        pool = TaskWorktreePool(self.runtime, eval_root, eval_pool, eval_state)
+        outbox = eval_state / "outbox"
+        inbox = eval_state / "receipts"
+        outbox.mkdir()
+        inbox.mkdir()
+        importer = ChiefTaskImporter(
+            repository, outbox, inbox, [project_cfg], dispatcher=dispatcher, allowed_projects=["eval"],
+        )
+        report_dir = eval_state / "execution-reports"
+        review_inbox = ChiefReviewInbox(
+            eval_state / "chief-review-inbox", self.runtime, eval_root, pool.pool_root, eval_state,
+        )
+        relpath = "reports/EVAL-R5.md"
+        payload = {
+            "schemaVersion": ENVELOPE_VERSION,
+            "task": {
+                "id": "TASK-EVAL-R5",
+                "projectId": "eval",
+                "title": "TASK-EVAL-R5",
+                "objective": "Write one markdown report and stop at REVIEW.",
+                "scope": [relpath],
+                "acceptance": ["Stay in REVIEW"],
+                "verificationCommands": [{
+                    "id": "verify-1",
+                    "criterion": "Stay in REVIEW",
+                    "argv": ["test", "-f", relpath],
+                }],
+                "priority": "P2",
+                "riskLevel": "low",
+                "allowedExecutors": ["cursor-r1"],
+                "workspaceRoots": [str(eval_root)],
+                "dependencies": [],
+                "sourceUri": "outbox/TASK-EVAL-R5.json",
+                "approvalClass": "none",
+            },
+            "facts": dict(CLEAR_FACTS),
+        }
+        atomic_write_json(outbox / "TASK-EVAL-R5.json", payload)
+        ingested = importer.ingest_once()[0]
+        self.assertEqual(ingested["state"], "READY")
+        runner = CursorRunner(
+            dispatcher, "cursor-r1", self.fake_command(FAKE_COMMIT, relpath, "eval canary\n"),
+            timeout_seconds=20, worktree_pool=pool, execution_report_dir=report_dir,
+        )
+        result = CursorDaemon(
+            runner, "eval", idle_seconds=0, reporter=importer.reporter.report_cycle,
+        ).run(max_cycles=1)
+        self.assertEqual(result["task_state"], "REVIEW")
+        self.assertEqual(runner.verification_invocations, [["test", "-f", relpath]])
+        self.assertEqual(repository.get_task("TASK-EVAL-R5")["state"], "REVIEW")
+        self.assertEqual(self._head(eval_root), eval_head)
+        self.assert_runtime_frozen()
+        self.assertIs(review_inbox.path.exists(), True)
+        self.assertFalse((eval_root / relpath).exists())
 
 
 if __name__ == "__main__":

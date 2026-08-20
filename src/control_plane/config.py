@@ -33,6 +33,14 @@ class Settings:
     projects: List[ProjectConfig]
 
 
+@dataclass(frozen=True)
+class ExecutionRoots:
+    runtime_root: Path
+    project_root: Path
+    pool_root: Path
+    state_root: Path
+
+
 def _resolve_from_base(base: Path, value: str) -> Path:
     candidate = Path(value).expanduser()
     if candidate.is_absolute():

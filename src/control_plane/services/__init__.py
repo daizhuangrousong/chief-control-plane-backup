@@ -32,7 +32,7 @@ from .task_worktree import TaskWorktreeError, TaskWorktreePool
 from .execution_contract import (
     EXECUTION_REPORT_VERSION, EXECUTOR_RESULT_VERSION, ExecutionContractError, inspect_execution,
     load_execution_report, parse_executor_result, persist_execution_report, revalidate_execution_report,
-    run_chief_verification,
+    run_chief_verification, assert_safe_chief_commands,
 )
 from .chief_review_decision import (
     DECISION_VERSION, ChiefReviewDecisionError, ChiefReviewInbox, parse_review_decision,
@@ -59,7 +59,7 @@ __all__ = [
     "TaskWorktreeError", "TaskWorktreePool",
     "EXECUTION_REPORT_VERSION", "EXECUTOR_RESULT_VERSION", "ExecutionContractError", "inspect_execution",
     "load_execution_report", "parse_executor_result", "persist_execution_report",
-    "revalidate_execution_report", "run_chief_verification",
+    "revalidate_execution_report", "run_chief_verification", "assert_safe_chief_commands",
     "DECISION_VERSION", "ChiefReviewDecisionError", "ChiefReviewInbox", "parse_review_decision",
     "TaskMergeError", "TaskMerger",
     "BaselinePromotionError", "BaselinePromoter",

@@ -60,15 +60,15 @@ R3 wires the reviewed file ingress to the existing Cursor runner. Enable
 at the committed R3 worktree with `--inbox-dir`. Use an isolated R3 sqlite file.
 R1 remains the rollback baseline. See `docs/CHIEF_TASK_INGRESS.md`.
 
-R4 adds isolated task worktrees, a single-commit contract, a runtime-side Chief
-review inbox, durable execution reports that the merger re-checks, and baseline
-promotion. The executor payload may only name the leased worktree. Acceptance
-must come from an `executor-result/1.0.0` envelope; the runner never auto-marks
-pass. Acceptance argv come only from Chief `verificationCommands` on the task
-contract; Executor argv are rejected. R4.3 is Tier 1 (same-user, fallible
-executor) and may only attach a new Eval repository in R5 — not Julius, Director,
-databases, secrets, or deploy. Do not enable a LaunchAgent for R4. See
-`docs/EXECUTION_LIFECYCLE.md`.
+R4 adds isolated task worktrees on a **target** Git repository, a single-commit
+contract, a state-root Chief review inbox, durable execution reports that the
+merger re-checks without re-running commands, and baseline promotion. Runtime
+code stays in a separate Control Plane repository. The executor payload may only
+name the leased worktree. Acceptance argv come only from Chief
+`verificationCommands`; Executor argv and `..` path segments are rejected. R4.4
+is Tier 1 (same-user, fallible executor) and may only attach a new Eval
+repository in R5 — not Julius, Director, databases, secrets, or deploy. Do not
+enable a LaunchAgent for R4. See `docs/EXECUTION_LIFECYCLE.md`.
 
 The API binds to `127.0.0.1:8765` by default. Do not bind it to a public interface until authentication,
 request auditing and deployment security have been implemented and reviewed.

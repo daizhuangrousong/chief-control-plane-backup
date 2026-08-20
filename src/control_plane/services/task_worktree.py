@@ -14,6 +14,7 @@ from .task_registry import TASK_ID_PATTERN, TaskValidationError
 
 OCCUPANCY_VERSION = "task-worktree-occupancy/1.0.0"
 TASK_BRANCH_PREFIX = "task/"
+RUNTIME_SOURCE_MARKER = Path("src") / "control_plane" / "__init__.py"
 
 
 class TaskWorktreeError(TaskValidationError):
@@ -85,9 +86,46 @@ def git_toplevel(root: Path) -> Path:
     return Path(raw).resolve()
 
 
-def assert_control_path(
+def git_is_clean(root: Path, label: str) -> str:
+    try:
+        head = git_checked(root, "rev-parse", "HEAD")
+        porcelain = git_checked(root, "status", "--porcelain")
+    except GitError as error:
+        raise TaskWorktreeError("{} git status is unreadable".format(label)) from error
+    if not head:
+        raise TaskWorktreeError("{} git HEAD is unknown".format(label))
+    if porcelain:
+        raise TaskWorktreeError("{} must be a clean git checkout".format(label))
+    return head
+
+
+def enclosing_git_root(path: Path) -> Optional[Path]:
+    current = Path(path).resolve()
+    for candidate in [current, *current.parents]:
+        git_dir = candidate / ".git"
+        if git_dir.exists():
+            return candidate
+    return None
+
+
+def assert_runtime_sources(runtime_root: Path) -> None:
+    marker = Path(runtime_root).resolve() / RUNTIME_SOURCE_MARKER
+    if marker.is_symlink() or not marker.is_file():
+        raise TaskWorktreeError("runtime root does not contain Control Plane sources")
+
+
+def assert_module_not_from_target(project_root: Path, pool_root: Path) -> None:
+    import control_plane
+
+    loaded = Path(control_plane.__file__).resolve()
+    if path_within(loaded, project_root) or path_within(loaded, pool_root):
+        raise TaskWorktreeError("control plane module must not load from the target repository")
+
+
+def assert_state_path(
     path: Path,
     label: str,
+    state_root: Path,
     runtime_root: Path,
     project_root: Path,
     pool_root: Path,
@@ -95,13 +133,14 @@ def assert_control_path(
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
     path = resolve_existing_dir(path, label)
+    state_root = Path(state_root).resolve()
     runtime_root = Path(runtime_root).resolve()
     project_root = Path(project_root).resolve()
     pool_root = Path(pool_root).resolve()
-    if path == runtime_root:
-        raise TaskWorktreeError("{} must sit inside the runtime control directory".format(label))
-    if not path_within(path, runtime_root):
-        raise TaskWorktreeError("{} must sit inside the runtime control directory".format(label))
+    if not path_within(path, state_root):
+        raise TaskWorktreeError("{} must sit inside the state root".format(label))
+    if path_within(path, runtime_root):
+        raise TaskWorktreeError("{} must not sit inside the runtime checkout".format(label))
     if path_within(path, project_root):
         raise TaskWorktreeError("{} must not sit inside the project checkout".format(label))
     if path_within(path, pool_root):
@@ -109,40 +148,78 @@ def assert_control_path(
     return path
 
 
-class TaskWorktreePool:
-    """Create one branch and one worktree per task from a registered baseline."""
+def assert_control_path(
+    path: Path,
+    label: str,
+    runtime_root: Path,
+    project_root: Path,
+    pool_root: Path,
+    state_root: Path,
+) -> Path:
+    return assert_state_path(path, label, state_root, runtime_root, project_root, pool_root)
 
-    def __init__(self, runtime_root: Path, project_root: Path, pool_root: Path):
+
+class TaskWorktreePool:
+    """Create one branch and one worktree per task from a registered target baseline."""
+
+    def __init__(self, runtime_root: Path, project_root: Path, pool_root: Path, state_root: Path):
         runtime = resolve_existing_dir(runtime_root, "runtime root")
         project = resolve_existing_dir(project_root, "project root")
         pool = Path(pool_root)
         pool.mkdir(parents=True, exist_ok=True)
         pool = resolve_existing_dir(pool, "task worktree pool")
+        state = Path(state_root)
+        if state.exists() and state.is_symlink():
+            raise TaskWorktreeError("state root must not be a symlink")
+        state.mkdir(parents=True, exist_ok=True)
+        state = resolve_existing_dir(state, "state root")
         if paths_equal(runtime, project):
             raise TaskWorktreeError("runtime root must not be the project root")
+        if path_within(runtime, project) or path_within(project, runtime):
+            raise TaskWorktreeError("runtime root and project root must not nest")
         if paths_equal(pool, runtime) or path_within(pool, runtime) or path_within(runtime, pool):
             raise TaskWorktreeError("runtime root and task worktree pool must not nest")
         if not path_within(pool, project) or paths_equal(pool, project):
             raise TaskWorktreeError("task worktree pool is outside the authorized project root")
+        if (
+            path_within(state, runtime)
+            or path_within(state, project)
+            or path_within(state, pool)
+            or paths_equal(state, runtime)
+            or paths_equal(state, project)
+            or paths_equal(state, pool)
+        ):
+            raise TaskWorktreeError("state root must sit outside runtime, project, and pool")
+        git_enclosing = enclosing_git_root(state)
+        if git_enclosing is not None:
+            raise TaskWorktreeError("state root must not sit inside a git repository")
         try:
             runtime_top = git_toplevel(runtime)
             project_top = git_toplevel(project)
         except TaskWorktreeError as error:
-            raise TaskWorktreeError("runtime and project must be git worktrees of the same repository") from error
+            raise TaskWorktreeError("runtime and project must be independent git repositories") from error
         if runtime_top != runtime:
             raise TaskWorktreeError("unexpected Git toplevel for runtime root")
         if project_top != project:
             raise TaskWorktreeError("unexpected Git toplevel for project root")
-        if git_common_dir(runtime) != git_common_dir(project):
-            raise TaskWorktreeError("runtime root is not a worktree of the project repository")
+        if git_common_dir(runtime) == git_common_dir(project):
+            raise TaskWorktreeError("runtime and project must not share a git common dir")
         if pool.is_symlink():
             raise TaskWorktreeError("task worktree pool must not be a symlink")
+        assert_runtime_sources(runtime)
+        assert_module_not_from_target(project, pool)
+        runtime_head = git_is_clean(runtime, "runtime root")
+        project_head = git_is_clean(project, "project root")
+        (state / "occupancy").mkdir(parents=True, exist_ok=True)
         self.runtime_root = runtime
         self.project_root = project
         self.pool_root = pool
+        self.state_root = state
+        self.runtime_head = runtime_head
+        self.project_head = project_head
 
     def occupancy_path(self, task_id: str) -> Path:
-        return self.pool_root / "{}.occupancy.json".format(task_id)
+        return self.state_root / "occupancy" / "{}.occupancy.json".format(task_id)
 
     def worktree_path(self, task_id: str) -> Path:
         return self.pool_root / task_id
@@ -164,6 +241,8 @@ class TaskWorktreePool:
     def assert_hosts_unchanged(self, snapshot: Dict[str, str], baseline_ref: str) -> None:
         current = self.snapshot_hosts()
         if current["runtimeHead"] != snapshot["runtimeHead"]:
+            raise TaskWorktreeError("runtime HEAD was modified")
+        if current["runtimeHead"] != self.runtime_head:
             raise TaskWorktreeError("runtime HEAD was modified")
         if current["projectHead"] != snapshot["projectHead"]:
             raise TaskWorktreeError("target checkout was modified")
@@ -237,6 +316,9 @@ class TaskWorktreePool:
         if git_common_dir(worktree) != git_common_dir(self.project_root):
             self._remove_worktree(worktree)
             raise TaskWorktreeError("task worktree is not in the project repository")
+        if git_common_dir(worktree) == git_common_dir(self.runtime_root):
+            self._remove_worktree(worktree)
+            raise TaskWorktreeError("task worktree must not share the runtime repository")
         if head != baseline_ref:
             self._remove_worktree(worktree)
             raise TaskWorktreeError(

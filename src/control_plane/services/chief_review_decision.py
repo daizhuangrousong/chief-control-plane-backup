@@ -78,11 +78,11 @@ def _atomic_write_json(path: Path, payload: Dict[str, Any]) -> None:
 class ChiefReviewInbox:
     """Chief-only review inbox. Must sit on the runtime control side, never a task tree."""
 
-    def __init__(self, path: Path, runtime_root: Path, project_root: Path, pool_root: Path):
+    def __init__(self, path: Path, runtime_root: Path, project_root: Path, pool_root: Path, state_root: Path):
         from .task_worktree import assert_control_path
 
         self.path = assert_control_path(
-            Path(path), "chief review inbox", runtime_root, project_root, pool_root,
+            Path(path), "chief review inbox", runtime_root, project_root, pool_root, state_root,
         )
 
     def decision_path(self, task_id: str) -> Path:

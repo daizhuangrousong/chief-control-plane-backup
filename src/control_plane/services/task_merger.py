@@ -42,7 +42,7 @@ class TaskMerger:
         self.review_inbox = review_inbox
         self.execution_report_dir = assert_control_path(
             Path(execution_report_dir), "execution report directory",
-            pool.runtime_root, pool.project_root, pool.pool_root,
+            pool.runtime_root, pool.project_root, pool.pool_root, pool.state_root,
         )
         self.executor_id = executor_id
         self.target_branch = target_branch

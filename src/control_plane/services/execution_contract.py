@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from ..adapters.git import GitError, git_checked
 from .task_registry import TaskValidationError, criteria_of, verification_commands_of
+from .task_worktree import TaskWorktreeError, git_common_dir
 
 
 EXECUTION_REPORT_VERSION = "execution-report/1.0.0"
@@ -35,6 +36,11 @@ def inspect_execution(
     runtime_root = Path(runtime_root).resolve()
     if worktree == runtime_root:
         raise ExecutionContractError("refusing to execute inside the resident runtime worktree")
+    try:
+        if git_common_dir(worktree) == git_common_dir(runtime_root):
+            raise ExecutionContractError("refusing to execute inside the runtime repository")
+    except TaskWorktreeError as error:
+        raise ExecutionContractError("could not compare worktree and runtime repositories") from error
     try:
         after = git_checked(worktree, "rev-parse", "HEAD")
     except GitError as error:
@@ -210,7 +216,6 @@ def revalidate_execution_report(
     reported_tree = Path(str(report.get("worktree") or "")).resolve()
     if reported_tree != Path(worktree).resolve():
         raise ExecutionContractError("execution report worktree mismatch")
-    replay_acceptance_commands(worktree, declared)
     return fresh
 
 
@@ -301,6 +306,25 @@ def _summarize_output(stdout: Optional[str], stderr: Optional[str]) -> str:
     return blob
 
 
+def argv_has_dotdot(argv: Sequence[Any]) -> bool:
+    for part in argv:
+        for segment in str(part).replace("\\", "/").split("/"):
+            if segment == "..":
+                return True
+    return False
+
+
+def assert_safe_chief_commands(commands: Sequence[Dict[str, Any]]) -> None:
+    if not commands:
+        raise ExecutionContractError("verificationCommands are missing")
+    for command in commands:
+        argv = command.get("argv")
+        if not isinstance(argv, list) or not argv:
+            raise ExecutionContractError("chief verification argv is invalid")
+        if argv_has_dotdot(argv):
+            raise ExecutionContractError("verification argv must not contain .. path segments")
+
+
 def run_chief_verification(
     worktree: Path,
     commands: Sequence[Dict[str, Any]],
@@ -308,13 +332,10 @@ def run_chief_verification(
     invocations: Optional[List] = None,
 ) -> List[Dict[str, Any]]:
     worktree = Path(worktree)
-    if not commands:
-        raise ExecutionContractError("verificationCommands are missing")
+    assert_safe_chief_commands(commands)
     results = []
     for command in commands:
         argv = command.get("argv")
-        if not isinstance(argv, list) or not argv:
-            raise ExecutionContractError("chief verification argv is invalid")
         if invocations is not None:
             invocations.append(list(argv))
         try:

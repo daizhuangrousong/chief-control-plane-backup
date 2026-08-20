@@ -1,3 +1,3 @@
-# BLOCKED · R4.3 Chief 固定验收命令
+# BLOCKED · R4.4 Control Plane 跨仓执行
 
 无
