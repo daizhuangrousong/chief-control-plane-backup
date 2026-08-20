@@ -1,13 +1,13 @@
-# BLOCKED · R3 Chief 文档自动派单激活
+# BLOCKED · R3 已回滚
 
 ## Feishu outbound
 
-BLOCKED: `FEISHU_APP_ID` and `FEISHU_APP_SECRET` are unset. R3 did not send cards or request credentials.
+BLOCKED: `FEISHU_APP_ID` and `FEISHU_APP_SECRET` are unset. Rollback sent no cards.
 
 ## Real Cursor `--print`
 
-本任务增量 1。累计 2。失败不重试。不得再调用。
+本任务增量 0。累计仍为 2。禁止再调用。
 
 ## LaunchAgent
 
-`com.pojian.chief-task-ingress` 与 R3 `com.pojian.chief-cursor-runner` 均 running/idle。R1 plist 备份仍在 `var/rollback/com.pojian.chief-cursor-runner.plist.r1`。等待 Chief REVIEW，不得扩到其他项目。
+仅 R1 `com.pojian.chief-cursor-runner` running/idle。`com.pojian.chief-task-ingress` 已停止且不在 `gui/501`。R3 不得重新启用。等待 Chief REVIEW。
