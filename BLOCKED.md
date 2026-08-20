@@ -6,8 +6,8 @@ BLOCKED: `FEISHU_APP_ID` and `FEISHU_APP_SECRET` are unset. R3 did not send card
 
 ## Real Cursor `--print`
 
-未激活前增量为 0。累计仍为 1 次。激活时最多再调用 1 次；失败不重试。
+本任务增量 1。累计 2。失败不重试。不得再调用。
 
 ## LaunchAgent
 
-激活前 R1 `com.pojian.chief-cursor-runner` 保持 idle，作为回滚基线。R3 代码提交后才允许启用 `com.pojian.chief-task-ingress` 并把 Runner 切到已提交 R3 worktree。
+`com.pojian.chief-task-ingress` 与 R3 `com.pojian.chief-cursor-runner` 均 running/idle。R1 plist 备份仍在 `var/rollback/com.pojian.chief-cursor-runner.plist.r1`。等待 Chief REVIEW，不得扩到其他项目。
