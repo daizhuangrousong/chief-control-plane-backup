@@ -28,6 +28,12 @@
     <string>3</string>
     <string>--inbox-dir</string>
     <string>/absolute/path/to/chief-task-inbox</string>
+    <string>--lifecycle-config</string>
+    <string>/absolute/path/to/execution-lifecycle.local.json</string>
+    <string>--cursor-keychain-service</string>
+    <string>com.pojian.chief-cursor-api</string>
+    <string>--cursor-keychain-account</string>
+    <string>pojian</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>

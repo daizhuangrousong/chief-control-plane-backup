@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import os
+import stat
 import subprocess
 import sys
 from pathlib import Path
 from typing import Dict, Mapping, Optional, Sequence
 
-from .cursor_launch import CLI_ENV_ALLOWLIST, filter_cli_env
+from .cursor_launch import (
+    CLI_ENV_ALLOWLIST,
+    CREDENTIAL_STORE_KEY,
+    PRODUCTION_CREDENTIAL_STORE,
+    filter_cli_env,
+)
 from .task_registry import TaskValidationError
 from .task_worktree import path_within, paths_equal, resolve_existing_dir
 
@@ -17,6 +23,8 @@ SANDBOX_EXEC = Path("/usr/bin/sandbox-exec")
 PROFILE_VERSION_LINE = "(version 1)"
 DENY_WRITES_LINE = "(deny file-write*)"
 ALLOW_DEV_NULL_LINE = '(allow file-write* (literal "/dev/null"))'
+AUTH_JSON_DIRNAME = ".cursor"
+AUTH_JSON_FILENAME = "auth.json"
 
 
 class ExecutorSandboxError(TaskValidationError):
@@ -88,6 +96,7 @@ def sandbox_environment(clone: Path, source: Optional[Mapping[str, str]] = None)
         "XDG_DATA_HOME": str(xdg / "data"),
         "XDG_RUNTIME_DIR": str(xdg / "runtime"),
         "PYTHONDONTWRITEBYTECODE": "1",
+        CREDENTIAL_STORE_KEY: PRODUCTION_CREDENTIAL_STORE,
     }
     environment = {key: value for key, value in filtered.items() if key in CLI_ENV_ALLOWLIST}
     environment.update(overlay)
@@ -217,11 +226,11 @@ def prepare_executor_sandbox(
 ) -> Dict[str, object]:
     require_sandbox_exec()
     clone = Path(clone).resolve()
+    environment = sandbox_environment(clone, source_env)
     profile_path = write_sandbox_profile(
         state_root, task_id, clone, runtime_root, project_root, pool_root,
     )
     _prepare_sandbox_dirs(clone)
-    environment = sandbox_environment(clone, source_env)
     probe_sandbox(profile_path, environment, clone)
     return {
         "profilePath": str(profile_path),
@@ -229,6 +238,65 @@ def prepare_executor_sandbox(
         "sandboxExec": str(SANDBOX_EXEC),
         "clone": str(clone),
     }
+
+
+def _lexists(path: Path) -> bool:
+    try:
+        os.lstat(str(path))
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError as error:
+        raise ExecutorSandboxError("sandbox auth path is unreadable") from error
+
+
+def _is_regular_file(path: Path) -> bool:
+    try:
+        mode = os.lstat(str(path)).st_mode
+    except OSError as error:
+        raise ExecutorSandboxError("sandbox auth path is unreadable") from error
+    return stat.S_ISREG(mode)
+
+
+def sandbox_auth_json_path(home: Path) -> Path:
+    return Path(home) / AUTH_JSON_DIRNAME / AUTH_JSON_FILENAME
+
+
+def clear_sandbox_auth_json(home: Path, clone: Path) -> None:
+    clone = Path(clone).resolve()
+    home = Path(home)
+    if not str(home):
+        raise ExecutorSandboxError("sandbox HOME is missing")
+    if home.is_symlink():
+        raise ExecutorSandboxError("sandbox HOME must not be a symlink")
+    if not home.exists() or not home.is_dir():
+        raise ExecutorSandboxError("sandbox HOME must be a directory")
+    if not path_within(home, clone):
+        raise ExecutorSandboxError("sandbox HOME escaped the clone")
+    cursor_dir = home / AUTH_JSON_DIRNAME
+    auth = sandbox_auth_json_path(home)
+    if auth.parent != cursor_dir or cursor_dir.parent != home:
+        raise ExecutorSandboxError("sandbox auth path escaped the clone HOME")
+    if auth.name != AUTH_JSON_FILENAME or cursor_dir.name != AUTH_JSON_DIRNAME:
+        raise ExecutorSandboxError("sandbox auth path is invalid")
+    if not _lexists(cursor_dir) and not _lexists(auth):
+        return
+    if _lexists(cursor_dir):
+        if cursor_dir.is_symlink():
+            raise ExecutorSandboxError("refusing to follow .cursor symlink")
+        if not cursor_dir.is_dir():
+            raise ExecutorSandboxError("sandbox auth parent is not a directory")
+    elif _lexists(auth):
+        raise ExecutorSandboxError("sandbox auth parent is missing")
+    if not _lexists(auth):
+        return
+    if auth.is_symlink():
+        raise ExecutorSandboxError("refusing to follow auth.json symlink")
+    if not _is_regular_file(auth):
+        raise ExecutorSandboxError("auth.json is not a regular file")
+    os.unlink(str(auth))
+    if _lexists(auth):
+        raise ExecutorSandboxError("auth.json still exists after cleanup")
 
 
 def launch_sandboxed_executor(
@@ -253,17 +321,26 @@ def launch_sandboxed_executor(
     environment = dict(sandbox.get("environment") or {})
     if not environment:
         raise ExecutorSandboxError("sandbox environment is missing")
+    home = Path(str(environment.get("HOME") or ""))
+    if not home or not path_within(home, workspace):
+        raise ExecutorSandboxError("HOME must sit inside the task clone")
+    tmp = Path(str(environment.get("TMPDIR") or ""))
+    if not tmp or not path_within(tmp, workspace):
+        raise ExecutorSandboxError("TMPDIR must sit inside the task clone")
     sandbox_exec = Path(str(sandbox.get("sandboxExec") or SANDBOX_EXEC))
     if sandbox_exec.resolve() != SANDBOX_EXEC.resolve():
         raise ExecutorSandboxError("refusing to use a non-system sandbox-exec")
-    return subprocess.run(
-        [str(SANDBOX_EXEC), "-f", str(profile_path), *[str(part) for part in argv]],
-        input=input_text,
-        capture_output=True,
-        text=True,
-        timeout=timeout_seconds,
-        cwd=str(workspace),
-        env=environment,
-        check=False,
-        shell=False,
-    )
+    try:
+        return subprocess.run(
+            [str(SANDBOX_EXEC), "-f", str(profile_path), *[str(part) for part in argv]],
+            input=input_text,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            cwd=str(workspace),
+            env=environment,
+            check=False,
+            shell=False,
+        )
+    finally:
+        clear_sandbox_auth_json(home, workspace)

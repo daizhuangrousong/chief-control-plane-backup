@@ -70,6 +70,24 @@ is Tier 1 (same-user, fallible executor) and may only attach a new Eval
 repository in R5 — not Julius, Director, databases, secrets, or deploy. Do not
 enable a LaunchAgent for R4. See `docs/EXECUTION_LIFECYCLE.md`.
 
+R6 isolates the executor in an independent `git clone --no-hardlinks` under
+`/usr/bin/sandbox-exec`. R7 wires that isolation to the resident entry:
+`run_cursor_runner.py` requires `--lifecycle-config` with absolute,
+non-overlapping roots and fails closed before claim if the file is missing,
+paths escape, or sandbox-exec is unavailable. It also requires Keychain
+`--cursor-keychain-service` and `--cursor-keychain-account`; the parent injects
+`CURSOR_API_KEY` into the sandboxed child only. The wrapper accepts `verification`,
+requires exactly one scoped commit, and accepts Cursor `--output-format json`
+only as a single successful outer `type=result` object. Inner model text is
+discarded; identity, commit, and acceptance come from the lease, Git inspect,
+and Chief fixed commands. HOME/TMP/XDG stay inside the clone;
+the kernel profile still writes only the clone and `/dev/null`. The child environment
+always includes `AGENT_CLI_CREDENTIAL_STORE=file` so Cursor CLI uses a file store
+inside clone HOME. Tokens may exist in `.sandbox-home/.cursor/auth.json` only for
+the child lifetime; the parent always deletes that file in `finally` and stops if
+cleanup cannot prove it is gone. Do not enable or replace the R1
+LaunchAgent in R7. Never put the API key in a plist, JSON file, or log.
+
 The API binds to `127.0.0.1:8765` by default. Do not bind it to a public interface until authentication,
 request auditing and deployment security have been implemented and reviewed.
 

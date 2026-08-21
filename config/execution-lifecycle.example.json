@@ -15,11 +15,12 @@
   "allowedReviewActors": ["chief"],
   "threatModel": "tier1-same-user-fallible",
   "nextAllowedAttach": "eval-r5",
-  "invariants": {
-    "runtimeAndProject": "distinct git repositories; git-common-dir must differ; neither may nest the other",
-    "stateRoot": "ordinary directory outside both git repos and the task pool; no symlink",
-    "poolRoot": "created by the target repo, never equal to projectRoot, shares git-common-dir only with projectRoot"
-  },
+    "invariants": {
+        "runtimeAndProject": "distinct git repositories; git-common-dir must differ; neither may nest the other",
+        "stateRoot": "ordinary directory outside both git repos and the task pool; no symlink",
+        "poolRoot": "created by the target repo, never equal to projectRoot, shares git-common-dir only with projectRoot",
+        "productionEntry": "scripts/run_cursor_runner.py requires this file via --lifecycle-config; sandbox-exec is mandatory; there is no unsandboxed resident switch"
+    },
   "cleanupRollback": {
     "keepRuntimeHead": true,
     "dropTaskWorktrees": ["git", "-C", "/absolute/path/to/eval-or-target-repo", "worktree", "prune"],

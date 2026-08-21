@@ -8,12 +8,18 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence
 from .cursor_runner import CursorAdapterError, redact_secrets
 
 
+CREDENTIAL_STORE_KEY = "AGENT_CLI_CREDENTIAL_STORE"
+CREDENTIAL_STORE_ALLOWED = frozenset({"memory", "file"})
+PRODUCTION_CREDENTIAL_STORE = "file"
+
 CLI_ENV_ALLOWLIST = (
     "HOME", "USER", "LOGNAME", "PATH", "SHELL",
     "TMPDIR", "TMP", "TEMP",
     "LANG", "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "LC_TIME", "TZ",
     "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_RUNTIME_DIR",
+    "PYTHONPATH", "PYTHONHOME", "PYTHONNOUSERSITE", "PYTHONDONTWRITEBYTECODE",
     "CURSOR_API_KEY", "CURSOR_API_ENDPOINT",
+    CREDENTIAL_STORE_KEY,
 )
 
 
@@ -28,7 +34,10 @@ def filter_cli_env(source: Optional[Mapping[str, str]] = None) -> Dict[str, str]
         value = environment.get(key)
         if value is None or value == "":
             continue
-        filtered[key] = str(value)
+        text = str(value)
+        if key == CREDENTIAL_STORE_KEY and text not in CREDENTIAL_STORE_ALLOWED:
+            continue
+        filtered[key] = text
     return filtered
 
 
@@ -63,6 +72,18 @@ def build_runner_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reject-limit", type=int, default=3)
     parser.add_argument("--max-cycles", type=int, default=0)
     parser.add_argument("--inbox-dir", default=None, help="Optional absolute Chief inbox for status receipts")
+    parser.add_argument(
+        "--lifecycle-config", required=True,
+        help="Absolute execution lifecycle JSON; production refuses to start without R6 isolation",
+    )
+    parser.add_argument(
+        "--cursor-keychain-service", required=True,
+        help="macOS Keychain service name for the Cursor API key; never a secret",
+    )
+    parser.add_argument(
+        "--cursor-keychain-account", required=True,
+        help="macOS Keychain account name for the Cursor API key; never a secret",
+    )
     return parser
 
 
@@ -73,9 +94,9 @@ def parse_runner_argv(argv: Optional[Sequence[str]] = None) -> argparse.Namespac
         raise CursorLaunchError("reject-limit must be >= 1")
     if args.idle_seconds < 0:
         raise CursorLaunchError("idle-seconds must be >= 0")
-    for path_arg in (args.config, args.log_file, args.halt_file):
+    for path_arg in (args.config, args.log_file, args.halt_file, args.lifecycle_config):
         if not Path(path_arg).is_absolute():
-            raise CursorLaunchError("config, log-file and halt-file must be absolute paths")
+            raise CursorLaunchError("config, log-file, halt-file and lifecycle-config must be absolute paths")
     if args.inbox_dir:
         inbox = Path(args.inbox_dir)
         if not inbox.is_absolute():

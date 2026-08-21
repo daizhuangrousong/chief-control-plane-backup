@@ -13,9 +13,14 @@ from .cursor_launch import filter_cli_env
 
 REQUIRED_FIELDS = (
     "taskId", "projectId", "title", "objective", "scope", "acceptance",
-    "workspaceRoots", "approvalClass", "ownerApprovalRef", "leaseId",
+    "verification", "workspaceRoots", "approvalClass", "ownerApprovalRef", "leaseId",
     "taskVersion", "baselineRef",
 )
+VERIFICATION_FIELDS = {"id", "criterion"}
+CLI_RESULT_FIELDS = {
+    "type", "subtype", "is_error", "duration_ms", "duration_api_ms",
+    "result", "session_id", "request_id", "usage",
+}
 FORBIDDEN_CONFIG_KEYS = {
     "apiKey", "api_key", "token", "secret", "password", "CURSOR_API_KEY",
     "FEISHU_APP_SECRET", "appSecret", "app_secret",
@@ -90,6 +95,7 @@ def parse_task_payload(raw: str) -> Dict[str, Any]:
         value = payload.get(key)
         if not isinstance(value, list) or not value or any(not str(item).strip() for item in value):
             raise CursorCliWrapperError("{} must be a non-empty string list".format(key))
+    payload["verification"] = parse_verification(payload.get("verification"), payload["acceptance"])
     try:
         ApprovalClass(payload["approvalClass"])
     except ValueError as error:
@@ -97,6 +103,33 @@ def parse_task_payload(raw: str) -> Dict[str, Any]:
     if ready_requires_owner_approval(payload["approvalClass"], payload.get("ownerApprovalRef")):
         raise CursorCliWrapperError("ownerApprovalRef is required for this approvalClass")
     return payload
+
+
+def parse_verification(raw: Any, acceptance: Sequence[str]) -> List[Dict[str, str]]:
+    if not isinstance(raw, list) or len(raw) != len(acceptance):
+        raise CursorCliWrapperError("verification must match acceptance 1:1")
+    parsed: List[Dict[str, str]] = []
+    seen = set()
+    for index, item in enumerate(raw):
+        if not isinstance(item, dict):
+            raise CursorCliWrapperError("verification items must be objects")
+        extra = sorted(set(item) - VERIFICATION_FIELDS)
+        if extra:
+            raise CursorCliWrapperError("verification has unknown fields: {}".format(", ".join(extra)))
+        missing = sorted(VERIFICATION_FIELDS - set(item))
+        if missing:
+            raise CursorCliWrapperError("verification missing fields: {}".format(", ".join(missing)))
+        command_id = str(item.get("id") or "").strip()
+        criterion = str(item.get("criterion") or "").strip()
+        if not command_id or not criterion:
+            raise CursorCliWrapperError("verification id and criterion must be non-empty")
+        if command_id in seen:
+            raise CursorCliWrapperError("verification id contains duplicates")
+        if criterion != str(acceptance[index]).strip():
+            raise CursorCliWrapperError("verification criteria are missing, extra, or out of order")
+        seen.add(command_id)
+        parsed.append({"id": command_id, "criterion": criterion})
+    return parsed
 
 
 def assert_workspace(payload: Dict[str, Any]) -> Path:
@@ -131,8 +164,9 @@ def build_cli_command(cli_path: str, workspace: Path, payload: Dict[str, Any]) -
     prompt = json.dumps({
         "constraints": [
             "Do not access the network or fetch external documents.",
-            "Do not modify source code, tests, git metadata, or credentials.",
-            "Do not run git commit, push, merge, or deploy.",
+            "Change only the files listed in task.scope; do not modify tests, credentials, or other paths.",
+            "Create exactly one git commit in the leased workspace. Do not push, merge, or deploy.",
+            "Final assistant text is not acceptance, identity, or a commit proof. Do not treat it as the result schema.",
             "Follow the leased task payload exactly.",
         ],
         "task": payload,
@@ -140,6 +174,40 @@ def build_cli_command(cli_path: str, workspace: Path, payload: Dict[str, Any]) -
     return [
         cli_path, *HEADLESS_FLAGS, "--workspace", str(workspace), prompt,
     ]
+
+
+def _load_single_json_object(raw: str, label: str) -> Dict[str, Any]:
+    text = (raw or "").strip()
+    if not text:
+        raise CursorCliWrapperError("{} is missing".format(label))
+    decoder = json.JSONDecoder()
+    try:
+        payload, index = decoder.raw_decode(text)
+    except json.JSONDecodeError as error:
+        raise CursorCliWrapperError("{} is not JSON".format(label)) from error
+    leftover = text[index:].strip()
+    if leftover:
+        raise CursorCliWrapperError("{} has extra text after JSON".format(label))
+    if not isinstance(payload, dict):
+        raise CursorCliWrapperError("{} must be a JSON object".format(label))
+    return payload
+
+
+WRAPPER_ACK = {"status": "ok"}
+
+
+def unpack_cli_json(raw: str) -> Dict[str, str]:
+    envelope = _load_single_json_object(raw, "cursor CLI output")
+    extra = sorted(set(envelope) - CLI_RESULT_FIELDS)
+    if extra:
+        raise CursorCliWrapperError("cursor CLI output has unknown fields: {}".format(", ".join(extra)))
+    if envelope.get("type") != "result":
+        raise CursorCliWrapperError("cursor CLI output is not a single result object")
+    if envelope.get("is_error") is True or envelope.get("subtype") == "error":
+        raise CursorCliWrapperError("cursor CLI result is an error")
+    if "result" not in envelope:
+        raise CursorCliWrapperError("cursor CLI result payload is missing")
+    return dict(WRAPPER_ACK)
 
 
 def invoke_cursor_cli(
@@ -193,4 +261,16 @@ def main(argv: Optional[Sequence[str]] = None, stdin=None, env: Optional[Mapping
         if error.stderr:
             sys.stderr.write(redact_secrets(error.stderr if isinstance(error.stderr, str) else error.stderr.decode("utf-8", "replace")))
         return 1
-    return _print_process(completed)
+    if completed.stderr:
+        sys.stderr.write(redact_secrets(completed.stderr))
+    if completed.returncode != 0:
+        if completed.stdout:
+            sys.stdout.write(redact_secrets(completed.stdout))
+        return 1
+    try:
+        unpack_cli_json(completed.stdout)
+    except CursorCliWrapperError as error:
+        sys.stderr.write(redact_secrets(str(error)) + "\n")
+        return 2
+    sys.stdout.write(json.dumps(WRAPPER_ACK, ensure_ascii=False) + "\n")
+    return 0

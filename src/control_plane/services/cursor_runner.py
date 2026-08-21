@@ -4,7 +4,7 @@ import subprocess
 import threading
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 
 from ..adapters.git import git_at_root
 from ..domain.models import ApprovalClass, ready_requires_owner_approval
@@ -12,7 +12,7 @@ from .dispatcher import BaselineConflictError, LeaseConflictError, LeaseDispatch
 from .project_isolation import ISOLATED_PROJECT_IDS
 from .execution_contract import (
     EXECUTION_REPORT_VERSION, EXECUTOR_RESULT_VERSION, ExecutionContractError,
-    execution_report_path, inspect_execution, load_execution_report, parse_executor_result,
+    execution_report_path, inspect_execution, load_execution_report,
     persist_execution_report, run_chief_verification, revalidate_execution_report,
     assert_safe_chief_commands,
 )
@@ -53,6 +53,7 @@ class CursorRunner:
         isolated_project_ids=None,
         worktree_pool: Optional[TaskWorktreePool] = None,
         execution_report_dir: Optional[Path] = None,
+        source_env: Optional[Mapping[str, str]] = None,
     ):
         if isinstance(executor_command, str) or not executor_command:
             raise CursorAdapterError(
@@ -72,6 +73,7 @@ class CursorRunner:
         self._project_guard = threading.Lock()
         self.worktree_pool = worktree_pool
         self.verification_invocations: List[List[str]] = []
+        self._source_env = dict(source_env) if source_env is not None else None
         if worktree_pool is not None:
             if execution_report_dir is None:
                 raise CursorAdapterError("execution report directory is required when a worktree pool is enabled")
@@ -82,6 +84,11 @@ class CursorRunner:
             )
         else:
             self.execution_report_dir = Path(execution_report_dir).resolve() if execution_report_dir else None
+
+    def __repr__(self) -> str:
+        return "CursorRunner(executor_id={0!r})".format(self.executor_id)
+
+    __str__ = __repr__
 
     def run_next(self, project_id: Optional[str] = None, request_id: Optional[str] = None) -> Dict[str, Any]:
         request_id = request_id or str(uuid.uuid4())
@@ -144,6 +151,7 @@ class CursorRunner:
                     self.worktree_pool.project_root,
                     self.worktree_pool.pool_root,
                     self.worktree_pool.state_root,
+                    source_env=self._source_env,
                 )
             except (TaskWorktreeError, ExecutionContractError, ExecutorSandboxError) as error:
                 return self._fail(lease, baseline["baseline_ref"], request_id, str(error))
@@ -177,11 +185,6 @@ class CursorRunner:
                 commands = verification_commands_of((registered or {}).get("acceptance"))
                 if not commands:
                     raise ExecutionContractError("verificationCommands are missing from the registered task")
-                view = dict(task)
-                view["acceptance"] = criteria_of((registered or {}).get("acceptance"))
-                parsed_result = parse_executor_result(
-                    completed.stdout, view, lease["lease_id"], contract_report["afterRef"], commands,
-                )
                 verify_results = run_chief_verification(
                     workspace, commands, timeout=min(30, self.timeout_seconds),
                     invocations=self.verification_invocations,
@@ -221,8 +224,10 @@ class CursorRunner:
                 "acceptanceChecks": verify_results,
                 "executorResult": {
                     "schemaVersion": EXECUTOR_RESULT_VERSION,
-                    "taskVersion": parsed_result["taskVersion"],
-                    "commitRef": parsed_result["commitRef"],
+                    "taskId": task["id"],
+                    "taskVersion": int(task["version"]),
+                    "leaseId": lease["lease_id"],
+                    "commitRef": contract_report["afterRef"],
                 },
                 "worktree": str(workspace),
             }

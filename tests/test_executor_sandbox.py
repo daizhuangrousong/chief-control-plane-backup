@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from hashlib import sha256
 from pathlib import Path
 
 import control_plane
@@ -16,6 +17,9 @@ from control_plane.services import (
 from control_plane.services.executor_sandbox import (
     SANDBOX_EXEC, assert_fail_closed_profile, launch_sandboxed_executor,
     prepare_executor_sandbox, require_sandbox_exec, sandbox_environment, write_sandbox_profile,
+)
+from control_plane.services.cursor_launch import (
+    CREDENTIAL_STORE_KEY, PRODUCTION_CREDENTIAL_STORE, filter_cli_env,
 )
 from control_plane.services.task_clone import (
     assert_independent_clone, import_exact_commit, object_inodes,
@@ -70,6 +74,7 @@ print(json.dumps({"results": results, "env": {
     "GIT_DIR": os.environ.get("GIT_DIR"),
     "AWS_SECRET_ACCESS_KEY": os.environ.get("AWS_SECRET_ACCESS_KEY"),
     "LEAK_SENTINEL": os.environ.get("LEAK_SENTINEL"),
+    "AGENT_CLI_CREDENTIAL_STORE": os.environ.get("AGENT_CLI_CREDENTIAL_STORE"),
 }}))
 """
 
@@ -82,6 +87,47 @@ Path(rel).write_text(body, encoding="utf-8")
 subprocess.run(["git", "add", "--", rel], check=True)
 subprocess.run(["git", "commit", "-qm", "benign"], check=True)
 print(json.dumps({"commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()}))
+"""
+
+FAKE_KEYCHAIN_CURSOR = r"""
+import json, os, sys
+from pathlib import Path
+marker = Path(sys.argv[1])
+store = os.environ.get("AGENT_CLI_CREDENTIAL_STORE") or ""
+home = Path(os.environ.get("HOME") or "")
+auth = home / ".cursor" / "auth.json"
+keychain_hit = store not in ("memory", "file")
+if keychain_hit:
+    marker.write_text("keychain\n", encoding="utf-8")
+if store == "file":
+    auth.parent.mkdir(parents=True, exist_ok=True)
+    auth.write_text("{}\n", encoding="utf-8")
+print(json.dumps({
+    "store": store or "missing",
+    "keychain": keychain_hit,
+    "authExists": auth.is_file(),
+    "home": str(home),
+}))
+"""
+
+FAKE_FILE_STORE = r"""
+import json, os, sys, time
+from pathlib import Path
+mode = sys.argv[1] if len(sys.argv) > 1 else "ok"
+store = os.environ.get("AGENT_CLI_CREDENTIAL_STORE") or ""
+home = Path(os.environ.get("HOME") or "")
+auth = home / ".cursor" / "auth.json"
+if store == "file":
+    auth.parent.mkdir(parents=True, exist_ok=True)
+    auth.write_text("{}\n", encoding="utf-8")
+existed = auth.is_file()
+if mode == "sleep":
+    print(json.dumps({"store": store, "authExists": existed}), flush=True)
+    time.sleep(30)
+if mode == "fail":
+    print(json.dumps({"store": store, "authExists": existed}))
+    raise SystemExit(2)
+print(json.dumps({"store": store, "authExists": existed}))
 """
 
 
@@ -279,6 +325,7 @@ class ExecutorSandboxTest(unittest.TestCase):
         self.assertIsNone(body["env"]["AWS_SECRET_ACCESS_KEY"])
         self.assertIsNone(body["env"]["LEAK_SENTINEL"])
         self.assertIsNone(body["env"]["GIT_DIR"])
+        self.assertEqual(body["env"]["AGENT_CLI_CREDENTIAL_STORE"], "file")
         self.assertFalse(runtime_target.exists())
         self.assertFalse(child_target.exists())
         for item in body["results"]:
@@ -303,6 +350,9 @@ class ExecutorSandboxTest(unittest.TestCase):
         main_sentinel = self.project / "main-sentinel.txt"
         main_ref = self.project / ".git" / "refs" / "heads" / "main"
         child = self.project / ".git" / "refs" / "heads" / "main.child"
+        host_home = self.base / "host-home-attack"
+        host_home.mkdir()
+        host_sentinel = host_home / "host-sentinel.txt"
         probe = self.state / "write_probe.py"
         probe.write_text(WRITE_PROBE, encoding="utf-8")
         completed = launch_sandboxed_executor(
@@ -314,6 +364,7 @@ class ExecutorSandboxTest(unittest.TestCase):
                     str(main_sentinel),
                     str(main_ref),
                     str(symlink),
+                    str(host_sentinel),
                 ],
                 "child": str(child),
             })],
@@ -321,7 +372,7 @@ class ExecutorSandboxTest(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         body = json.loads(completed.stdout)
-        self.assertEqual(len(body["results"]), 7)
+        self.assertEqual(len(body["results"]), 8)
         for item in body["results"]:
             self.assertNotEqual(item["errno"], 0, item)
             self.assertEqual(item["errno"], 1, item)
@@ -330,6 +381,7 @@ class ExecutorSandboxTest(unittest.TestCase):
         self.assertFalse(report.exists())
         self.assertFalse(main_sentinel.exists())
         self.assertFalse(child.exists())
+        self.assertFalse(host_sentinel.exists())
         self.assertEqual((self.project / "README").read_text(encoding="utf-8"), "project\n")
         self.assert_hosts_frozen(before)
 
@@ -386,6 +438,207 @@ class ExecutorSandboxTest(unittest.TestCase):
         self.assertTrue((clone / "reports" / "TASK-R6-BENIGN.md").is_file())
         self.assert_hosts_frozen(before)
         self.assertNotEqual(git_common_dir(clone), git_common_dir(self.project))
+
+    def test_clone_home_is_writable_and_host_home_writes_are_denied(self):
+        occupancy = self.pool.allocate("TASK-R7-HOME-RO", self.head)
+        clone = Path(occupancy["path"])
+        host_home = self.base / "host-home"
+        host_home.mkdir()
+        existing = host_home / "login-marker"
+        existing.write_text("login-state\n", encoding="utf-8")
+        before_sha = sha256(existing.read_bytes()).hexdigest()
+        source_env = {
+            "PATH": os.environ.get("PATH", "/usr/bin"),
+            "HOME": str(host_home),
+            "LANG": "C",
+            "USER": os.environ.get("USER", "pojian"),
+            "CURSOR_API_KEY": "canary-secret-value-do-not-log",
+        }
+        sandbox = prepare_executor_sandbox(
+            "TASK-R7-HOME-RO", clone, self.runtime, self.project, self.pool_root, self.state,
+            source_env=source_env,
+        )
+        env = sandbox["environment"]
+        clone_home = clone / ".sandbox-home"
+        self.assertEqual(env["HOME"], str(clone_home))
+        self.assertNotEqual(env["HOME"], str(host_home))
+        self.assertTrue(str(env["TMPDIR"]).startswith(str(clone)))
+        self.assertTrue(str(env["XDG_CONFIG_HOME"]).startswith(str(clone)))
+        self.assertEqual(env.get("CURSOR_API_KEY"), "canary-secret-value-do-not-log")
+        profile = Path(sandbox["profilePath"]).read_text(encoding="utf-8")
+        self.assertEqual(sum(1 for line in profile.splitlines() if line.strip().startswith("(allow file-write")), 2)
+        self.assertIn('(literal "/dev/null")', profile)
+        self.assertIn('(subpath "{}")'.format(clone), profile)
+        self.assertNotIn(str(host_home), profile)
+
+        created = host_home / "new-sentinel.txt"
+        overwrite = existing
+        symlink = clone / "escape-home"
+        symlink.symlink_to(existing)
+        child_target = host_home / "child-sentinel.txt"
+        probe = self.state / "home_write_probe.py"
+        probe.write_text(WRITE_PROBE, encoding="utf-8")
+        completed = launch_sandboxed_executor(
+            [sys.executable, str(probe), json.dumps({
+                "targets": [str(created), str(overwrite), str(symlink)],
+                "child": str(child_target),
+            })],
+            clone, sandbox, "", 20,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        body = json.loads(completed.stdout)
+        self.assertTrue(body["env"]["HOME"].startswith(str(clone)))
+        self.assertEqual(len(body["results"]), 4)
+        for item in body["results"]:
+            self.assertEqual(item["errno"], 1, item)
+            if item["path"] != str(overwrite) and item["path"] != str(symlink):
+                self.assertFalse(Path(item["path"]).exists(), item)
+        self.assertEqual(sha256(existing.read_bytes()).hexdigest(), before_sha)
+        self.assertEqual(existing.read_text(encoding="utf-8"), "login-state\n")
+        self.assertFalse(created.exists())
+        self.assertFalse(child_target.exists())
+
+        project_dir = clone_home / ".cursor" / "projects" / "canary"
+        write_ok = self.state / "clone_home_write.py"
+        write_ok.write_text(
+            "from pathlib import Path\n"
+            "p = Path.home() / '.cursor' / 'projects' / 'canary'\n"
+            "p.mkdir(parents=True)\n"
+            "(p / 'ok.txt').write_text('ok\\n', encoding='utf-8')\n"
+            "print(p / 'ok.txt')\n",
+            encoding="utf-8",
+        )
+        writable = launch_sandboxed_executor(
+            [sys.executable, str(write_ok)], clone, sandbox, "", 20,
+        )
+        self.assertEqual(writable.returncode, 0, writable.stderr + writable.stdout)
+        self.assertTrue((project_dir / "ok.txt").is_file())
+        self.assertEqual((project_dir / "ok.txt").read_text(encoding="utf-8"), "ok\n")
+
+        benign = self.state / "home_benign.py"
+        benign.write_text(BENIGN_COMMIT, encoding="utf-8")
+        committed = launch_sandboxed_executor(
+            [sys.executable, str(benign), "reports/TASK-R7-HOME-RO.md", "ok\n"],
+            clone, sandbox, "", 20,
+        )
+        self.assertEqual(committed.returncode, 0, committed.stderr + committed.stdout)
+        self.assertTrue((clone / "reports" / "TASK-R7-HOME-RO.md").is_file())
+        self.assertEqual(sha256(existing.read_bytes()).hexdigest(), before_sha)
+        self.assertFalse(created.exists())
+        self.assertFalse(child_target.exists())
+        self.assertNotIn("canary-secret-value-do-not-log", (self.state / "home_write_probe.py").read_text(encoding="utf-8"))
+        self.assertNotIn("canary-secret-value-do-not-log", committed.stdout)
+        self.assertNotIn("canary-secret-value-do-not-log", completed.stdout)
+
+    def test_missing_credential_store_hits_fake_keychain_marker(self):
+        occupancy = self.pool.allocate("TASK-R7-KC-OLD", self.head)
+        clone = Path(occupancy["path"])
+        marker = clone / "keychain.marker"
+        script = self.state / "fake_cursor_old.py"
+        script.write_text(FAKE_KEYCHAIN_CURSOR, encoding="utf-8")
+        completed = subprocess.run(
+            [sys.executable, str(script), str(marker)],
+            capture_output=True, text=True, cwd=str(clone),
+            env={"PATH": os.environ.get("PATH", "/usr/bin"), "HOME": str(clone / ".sandbox-home")},
+            timeout=10,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        body = json.loads(completed.stdout)
+        self.assertEqual(body["store"], "missing")
+        self.assertTrue(body["keychain"])
+        self.assertTrue(marker.is_file())
+
+    def test_sandbox_pins_file_and_clears_auth_json(self):
+        occupancy = self.pool.allocate("TASK-R7-KC-FILE", self.head)
+        clone = Path(occupancy["path"])
+        parent_before = os.environ.get(CREDENTIAL_STORE_KEY)
+        marker = clone / "keychain.marker"
+        script = self.state / "fake_cursor_file.py"
+        script.write_text(FAKE_KEYCHAIN_CURSOR, encoding="utf-8")
+        source_env = {
+            "PATH": os.environ.get("PATH", "/usr/bin"),
+            "HOME": str(self.base / "host-home"),
+            "USER": os.environ.get("USER", "pojian"),
+            "CURSOR_API_KEY": "canary-secret-value-do-not-log",
+            CREDENTIAL_STORE_KEY: "memory",
+        }
+        env = sandbox_environment(clone, source_env)
+        self.assertEqual(env[CREDENTIAL_STORE_KEY], "file")
+        sandbox = prepare_executor_sandbox(
+            "TASK-R7-KC-FILE", clone, self.runtime, self.project, self.pool_root, self.state,
+            source_env=source_env,
+        )
+        completed = launch_sandboxed_executor(
+            [sys.executable, str(script), str(marker)],
+            clone, sandbox, "", 20,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
+        body = json.loads(completed.stdout)
+        self.assertEqual(body["store"], "file")
+        self.assertTrue(body["authExists"])
+        self.assertFalse(body["keychain"])
+        auth = Path(env["HOME"]) / ".cursor" / "auth.json"
+        self.assertFalse(auth.exists())
+        self.assertFalse(marker.exists())
+        self.assertEqual(os.environ.get(CREDENTIAL_STORE_KEY), parent_before)
+        profile = Path(sandbox["profilePath"]).read_text(encoding="utf-8")
+        self.assertEqual(sum(1 for line in profile.splitlines() if line.strip().startswith("(allow file-write")), 2)
+        self.assertNotIn("canary-secret-value-do-not-log", completed.stdout)
+        self.assertNotIn("canary-secret-value-do-not-log", completed.stderr)
+        for host_value in ("memory", "default", "keychain", "FILE", "file\n"):
+            pinned = sandbox_environment(clone, {CREDENTIAL_STORE_KEY: host_value, "PATH": "/usr/bin"})
+            self.assertEqual(pinned[CREDENTIAL_STORE_KEY], "file")
+        tracked = subprocess.check_output(
+            ["git", "-C", str(clone), "ls-files", ".sandbox-home"], text=True,
+        ).strip()
+        self.assertEqual(tracked, "")
+
+    def test_sandbox_clears_auth_json_on_nonzero_and_timeout(self):
+        occupancy = self.pool.allocate("TASK-R7-KC-CLEAN", self.head)
+        clone = Path(occupancy["path"])
+        script = self.state / "fake_file_store.py"
+        script.write_text(FAKE_FILE_STORE, encoding="utf-8")
+        sandbox = prepare_executor_sandbox(
+            "TASK-R7-KC-CLEAN", clone, self.runtime, self.project, self.pool_root, self.state,
+        )
+        home = Path(str(sandbox["environment"]["HOME"]))
+        auth = home / ".cursor" / "auth.json"
+        failed = launch_sandboxed_executor(
+            [sys.executable, str(script), "fail"],
+            clone, sandbox, "", 20,
+        )
+        self.assertEqual(failed.returncode, 2)
+        body = json.loads(failed.stdout)
+        self.assertEqual(body["store"], "file")
+        self.assertTrue(body["authExists"])
+        self.assertFalse(auth.exists())
+        with self.assertRaises(subprocess.TimeoutExpired):
+            launch_sandboxed_executor(
+                [sys.executable, str(script), "sleep"],
+                clone, sandbox, "", 1,
+            )
+        self.assertFalse(auth.exists())
+
+    def test_auth_json_symlink_is_fail_closed(self):
+        occupancy = self.pool.allocate("TASK-R7-KC-LINK", self.head)
+        clone = Path(occupancy["path"])
+        sandbox = prepare_executor_sandbox(
+            "TASK-R7-KC-LINK", clone, self.runtime, self.project, self.pool_root, self.state,
+        )
+        home = Path(str(sandbox["environment"]["HOME"]))
+        host_secret = self.base / "host-secret.json"
+        host_secret.write_text("keep\n", encoding="utf-8")
+        cursor_dir = home / ".cursor"
+        cursor_dir.mkdir(parents=True)
+        auth = cursor_dir / "auth.json"
+        auth.symlink_to(host_secret)
+        with self.assertRaises(ExecutorSandboxError):
+            launch_sandboxed_executor(
+                [sys.executable, "-c", "print(0)"],
+                clone, sandbox, "", 10,
+            )
+        self.assertTrue(auth.is_symlink())
+        self.assertEqual(host_secret.read_text(encoding="utf-8"), "keep\n")
 
 
 if __name__ == "__main__":

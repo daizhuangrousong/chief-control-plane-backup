@@ -25,6 +25,8 @@ from .cursor_runner import CursorAdapterError, CursorRunner, redact_secrets
 from .cursor_cli_wrapper import CursorCliWrapperError, load_runner_config, parse_task_payload
 from .cursor_daemon import CursorDaemon, CursorDaemonError
 from .cursor_launch import CursorLaunchError, parse_executor_command
+from .cursor_keychain import CursorKeychainError, load_cursor_api_key
+from .production_runtime import ProductionRuntimeError, load_production_runtime
 from .chief_task_ingress import (
     ChiefTaskImporter, ChiefTaskIngressError, ChiefTaskReporter, atomic_write_json,
 )
@@ -57,6 +59,8 @@ __all__ = [
     "CursorAdapterError", "CursorRunner", "redact_secrets",
     "CursorCliWrapperError", "load_runner_config", "parse_task_payload",
     "CursorDaemon", "CursorDaemonError", "CursorLaunchError", "parse_executor_command",
+    "CursorKeychainError", "load_cursor_api_key",
+    "ProductionRuntimeError", "load_production_runtime",
     "ChiefTaskImporter", "ChiefTaskIngressError", "ChiefTaskReporter", "atomic_write_json",
     "TaskWorktreeError", "TaskWorktreePool", "TaskCloneError", "ExecutorSandboxError",
     "EXECUTION_REPORT_VERSION", "EXECUTOR_RESULT_VERSION", "ExecutionContractError", "inspect_execution",
