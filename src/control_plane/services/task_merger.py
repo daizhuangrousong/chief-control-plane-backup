@@ -78,6 +78,7 @@ class TaskMerger:
         branch = occupancy["branch"]
         try:
             branch_head = git_checked(self.project_root, "rev-parse", branch)
+            occupancy_head = git_checked(worktree, "rev-parse", "HEAD")
             target_head = git_checked(self.project_root, "rev-parse", "HEAD")
             current = git_checked(self.project_root, "rev-parse", "--abbrev-ref", "HEAD")
             porcelain = git_checked(self.project_root, "status", "--porcelain")
@@ -108,6 +109,8 @@ class TaskMerger:
             raise TaskMergeError(str(error)) from error
         approved = decision["commitRef"].lower()
         already_on_target = target_head.lower() == approved
+        if occupancy_head.lower() != approved:
+            raise TaskMergeError("conflicting commit on the task branch")
         if not already_on_target and branch_head.lower() != approved:
             raise TaskMergeError("conflicting commit on the task branch")
         if current != self.target_branch:

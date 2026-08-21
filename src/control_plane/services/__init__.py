@@ -29,6 +29,8 @@ from .chief_task_ingress import (
     ChiefTaskImporter, ChiefTaskIngressError, ChiefTaskReporter, atomic_write_json,
 )
 from .task_worktree import TaskWorktreeError, TaskWorktreePool
+from .task_clone import TaskCloneError
+from .executor_sandbox import ExecutorSandboxError
 from .execution_contract import (
     EXECUTION_REPORT_VERSION, EXECUTOR_RESULT_VERSION, ExecutionContractError, inspect_execution,
     load_execution_report, parse_executor_result, persist_execution_report, revalidate_execution_report,
@@ -56,7 +58,7 @@ __all__ = [
     "CursorCliWrapperError", "load_runner_config", "parse_task_payload",
     "CursorDaemon", "CursorDaemonError", "CursorLaunchError", "parse_executor_command",
     "ChiefTaskImporter", "ChiefTaskIngressError", "ChiefTaskReporter", "atomic_write_json",
-    "TaskWorktreeError", "TaskWorktreePool",
+    "TaskWorktreeError", "TaskWorktreePool", "TaskCloneError", "ExecutorSandboxError",
     "EXECUTION_REPORT_VERSION", "EXECUTOR_RESULT_VERSION", "ExecutionContractError", "inspect_execution",
     "load_execution_report", "parse_executor_result", "persist_execution_report",
     "revalidate_execution_report", "run_chief_verification", "assert_safe_chief_commands",

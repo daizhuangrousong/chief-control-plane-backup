@@ -34,6 +34,7 @@ Chief 登记并只读观察 Julius 与 Director。它不替代两仓执行，不
 - Lease Dispatcher 让授权执行器以唯一、可过期租约领取 READY 任务，并在基线漂移时拒绝提交。
 - R0 Cursor 适配器只接受注入的 executor command，经 LeaseDispatcher 领取单任务，成功只进入 REVIEW；生产默认不会发现或启动真实 Cursor。
 - R1 通过 gitignore 本地配置注入官方 Cursor CLI 路径；空队列常驻 Runner 保持 idle，不启动 Cursor。
+- R6 任务执行使用 `git clone --no-hardlinks` 独立副本，并由 macOS `/usr/bin/sandbox-exec` fail-closed 限制写入：默认保留系统读取与进程运行，拒绝全部 `file-write*`，只允许任务 clone 与 `/dev/null`。沙盒不可用或 profile 越界则不启动 Executor，不回退到路径检查。HOME/TMPDIR/XDG 定向到 clone 内。成功后由可信父进程把 exact commit 导入目标仓 `task/<id>` ref；Executor 不能写目标 `.git`、Chief 状态或 runtime。生产默认仍不启动真实 Cursor。
 - 本地只读 API 提供 `/health`、`/api/projects`、`/api/runs`、`/api/findings`、`/api/reviews`、`/api/checks`、`/api/releases`、`/api/tasks`。
 
 ### 本地启动（clone 后第一段）
@@ -89,6 +90,12 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 - `docs/FEISHU_CONTROL_CHANNEL.md` —— TASK-017 Owner 控制通道、卡片字段、安全边界和启用步骤。
 - `docs/LEASE_DISPATCHER.md` —— TASK-018 租约协议、权限门禁、过期恢复与执行器边界。
 - `docs/CURSOR_RUNNER.md` —— R0 注入式 Cursor 适配器、审批分类与安全边界。
+
+## R6 隔离回滚
+
+R6 只存在于 worktree `/Users/pojian/repos/director-control-plane-r6-permission` 与分支 `chief-task-permission-r6`。回滚：删除该 worktree 与分支；R4 runtime `/Users/pojian/repos/director-control-plane-r4-lifecycle` 保持 `b9c344a`。不 merge、不 promote、不 push、不部署。
+
+实测：macOS 26.5.1，`/usr/bin/sandbox-exec` fail-closed；独立 clone 的 git-common-dir 位于 clone 内且 inode 不与项目/runtime 共享；对 runtime、stateRoot decision/report、目标 main 文件、目标 `.git/refs/heads/main`、clone 内 symlink 逃逸的真实写入均为 errno=1（EPERM）且 sentinel 不存在。正向 canary 只在 clone 内 commit，父进程导入 `task/<id>` 后停 REVIEW。全测 160 ran / 0 fail / 0 skip。真实 Cursor、生产接入、merge、promotion、push、部署均为 0。
 
 ## 冻结需求 Backlog
 

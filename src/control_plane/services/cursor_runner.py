@@ -126,21 +126,34 @@ class CursorRunner:
             except LeaseConflictError as error:
                 raise CursorAdapterError("duplicate claim rejected: {}".format(error)) from error
         self.dispatcher.heartbeat(lease["lease_id"], self.executor_id, request_id + ":heartbeat")
+        from .executor_sandbox import ExecutorSandboxError, prepare_executor_sandbox
+        from .task_clone import import_exact_commit
         host_snapshot = None
+        sandbox = None
         if self.worktree_pool is not None:
             try:
                 assert_safe_chief_commands(verification_commands_of(task.get("acceptance")))
                 allocated = self.worktree_pool.allocate(task["id"], baseline["baseline_ref"])
                 host_snapshot = self.worktree_pool.snapshot_hosts()
-            except (TaskWorktreeError, ExecutionContractError) as error:
+                workspace = Path(allocated["path"]).resolve()
+                before_ref = allocated["head"]
+                sandbox = prepare_executor_sandbox(
+                    task["id"],
+                    workspace,
+                    self.worktree_pool.runtime_root,
+                    self.worktree_pool.project_root,
+                    self.worktree_pool.pool_root,
+                    self.worktree_pool.state_root,
+                )
+            except (TaskWorktreeError, ExecutionContractError, ExecutorSandboxError) as error:
                 return self._fail(lease, baseline["baseline_ref"], request_id, str(error))
-            workspace = Path(allocated["path"]).resolve()
-            before_ref = allocated["head"]
         try:
-            completed = self._invoke(task, lease, workspace)
+            completed = self._invoke(task, lease, workspace, sandbox)
         except subprocess.TimeoutExpired as error:
             reason = self._reason("executor timed out", error.stdout, error.stderr)
             return self._fail(lease, baseline["baseline_ref"], request_id, reason)
+        except ExecutorSandboxError as error:
+            return self._fail(lease, baseline["baseline_ref"], request_id, str(error))
         except OSError as error:
             return self._fail(
                 lease, baseline["baseline_ref"], request_id,
@@ -181,6 +194,13 @@ class CursorRunner:
                     raise ExecutionContractError("verification changed the leased commit")
                 if post["changedPaths"] != contract_report["changedPaths"]:
                     raise ExecutionContractError("verification changed task scope")
+                import_exact_commit(
+                    self.worktree_pool.project_root,
+                    workspace,
+                    self.worktree_pool.branch_name(task["id"]),
+                    contract_report["afterRef"],
+                )
+                self.worktree_pool.assert_hosts_unchanged(host_snapshot, baseline["baseline_ref"])
             except (TaskWorktreeError, ExecutionContractError) as error:
                 return self._fail(lease, baseline["baseline_ref"], request_id, str(error))
             self.worktree_pool.mark_phase(task["id"], "executed")
@@ -295,7 +315,13 @@ class CursorRunner:
             resolved.append(path)
         return resolved[0]
 
-    def _invoke(self, task: Dict[str, Any], lease: Dict[str, Any], workspace: Path) -> subprocess.CompletedProcess:
+    def _invoke(
+        self,
+        task: Dict[str, Any],
+        lease: Dict[str, Any],
+        workspace: Path,
+        sandbox: Optional[Dict[str, Any]] = None,
+    ) -> subprocess.CompletedProcess:
         payload = {
             "taskId": task["id"],
             "projectId": task["project_id"],
@@ -318,16 +344,28 @@ class CursorRunner:
             "taskVersion": task["version"],
             "baselineRef": lease["baseline_ref"],
         }
+        payload_text = json.dumps(payload, ensure_ascii=False)
         self._emit("starting injected executor for {}".format(task["id"]))
-        return subprocess.run(
+        if self.worktree_pool is None:
+            return subprocess.run(
+                list(self.executor_command),
+                input=payload_text,
+                capture_output=True,
+                text=True,
+                timeout=self.timeout_seconds,
+                cwd=str(workspace),
+                check=False,
+                shell=False,
+            )
+        from .executor_sandbox import ExecutorSandboxError, launch_sandboxed_executor
+        if sandbox is None:
+            raise ExecutorSandboxError("executor sandbox was not prepared")
+        return launch_sandboxed_executor(
             list(self.executor_command),
-            input=json.dumps(payload, ensure_ascii=False),
-            capture_output=True,
-            text=True,
-            timeout=self.timeout_seconds,
-            cwd=str(workspace),
-            check=False,
-            shell=False,
+            workspace=Path(workspace),
+            sandbox=sandbox,
+            input_text=payload_text,
+            timeout_seconds=self.timeout_seconds,
         )
 
     def _fail(self, lease: Dict[str, Any], baseline_ref: str, request_id: str, reason: str) -> Dict[str, Any]:

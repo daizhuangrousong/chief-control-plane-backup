@@ -287,43 +287,15 @@ class TaskWorktreePool:
             if porcelain or not head:
                 raise TaskWorktreeError("refusing to reuse a dirty worktree")
             raise TaskWorktreeError("task worktree path is already occupied")
+        from .task_clone import create_independent_clone
         try:
-            git_checked(
-                self.project_root, "worktree", "add", "-b", self.branch_name(task_id),
-                str(worktree), baseline_ref,
+            cloned = create_independent_clone(
+                self.project_root, worktree, baseline_ref, self.runtime_root, self.pool_root,
             )
-        except GitError as error:
-            raise TaskWorktreeError("could not create task worktree: {}".format(error)) from error
-        worktree = worktree.resolve()
-        if worktree.is_symlink():
-            self._remove_worktree(worktree)
-            raise TaskWorktreeError("task worktree path must not be a symlink")
-        if not path_within(worktree, self.pool_root) or paths_equal(worktree, self.pool_root):
-            self._remove_worktree(worktree)
-            raise TaskWorktreeError("task worktree escaped the pool")
-        try:
-            head = git_checked(worktree, "rev-parse", "HEAD")
-            toplevel = git_toplevel(worktree)
-        except (GitError, TaskWorktreeError) as error:
-            self._remove_worktree(worktree)
-            raise TaskWorktreeError("task worktree git HEAD is unknown") from error
-        if not head:
-            self._remove_worktree(worktree)
-            raise TaskWorktreeError("task worktree git HEAD is unknown")
-        if toplevel != worktree:
-            self._remove_worktree(worktree)
-            raise TaskWorktreeError("unexpected Git toplevel for task worktree")
-        if git_common_dir(worktree) != git_common_dir(self.project_root):
-            self._remove_worktree(worktree)
-            raise TaskWorktreeError("task worktree is not in the project repository")
-        if git_common_dir(worktree) == git_common_dir(self.runtime_root):
-            self._remove_worktree(worktree)
-            raise TaskWorktreeError("task worktree must not share the runtime repository")
-        if head != baseline_ref:
-            self._remove_worktree(worktree)
-            raise TaskWorktreeError(
-                "task worktree HEAD {} != registered baseline {}".format(head, baseline_ref)
-            )
+        except TaskWorktreeError:
+            raise
+        worktree = Path(cloned["path"]).resolve()
+        head = cloned["head"]
         occupancy = {
             "schemaVersion": OCCUPANCY_VERSION,
             "taskId": task_id,
@@ -332,6 +304,8 @@ class TaskWorktreePool:
             "baselineRef": baseline_ref,
             "head": head,
             "phase": "allocated",
+            "gitCommonDir": cloned["gitCommonDir"],
+            "isolation": cloned["isolation"],
         }
         _atomic_write_json(self.occupancy_path(task_id), occupancy)
         return occupancy
@@ -355,8 +329,9 @@ class TaskWorktreePool:
             os.unlink(path)
 
     def _remove_worktree(self, worktree: Path) -> None:
+        from .task_clone import remove_clone
         try:
-            git_checked(self.project_root, "worktree", "remove", "--force", str(worktree))
-        except GitError:
-            if worktree.exists():
+            remove_clone(worktree, self.pool_root)
+        except TaskWorktreeError:
+            if Path(worktree).exists():
                 raise

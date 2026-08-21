@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from ..adapters.git import GitError, git_checked
 from .task_registry import TaskValidationError, criteria_of, verification_commands_of
-from .task_worktree import TaskWorktreeError, git_common_dir
+from .task_worktree import TaskWorktreeError, git_common_dir, path_within
 
 
 EXECUTION_REPORT_VERSION = "execution-report/1.0.0"
@@ -37,8 +37,11 @@ def inspect_execution(
     if worktree == runtime_root:
         raise ExecutionContractError("refusing to execute inside the resident runtime worktree")
     try:
-        if git_common_dir(worktree) == git_common_dir(runtime_root):
+        common = git_common_dir(worktree)
+        if common == git_common_dir(runtime_root):
             raise ExecutionContractError("refusing to execute inside the runtime repository")
+        if not path_within(common, worktree):
+            raise ExecutionContractError("refusing to execute inside a shared git worktree")
     except TaskWorktreeError as error:
         raise ExecutionContractError("could not compare worktree and runtime repositories") from error
     try:

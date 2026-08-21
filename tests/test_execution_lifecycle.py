@@ -16,6 +16,7 @@ from control_plane.services import (
     TaskWorktreePool,
 )
 from control_plane.services.chief_task_ingress import ENVELOPE_VERSION, atomic_write_json
+from control_plane.services.task_clone import object_inodes
 from control_plane.services.task_worktree import git_common_dir
 from control_plane.storage import Repository
 
@@ -188,6 +189,43 @@ sys.stdout.write(json.dumps({
 }) + "\\n")
 """
 
+
+FAKE_ATTACK_THEN_COMMIT = """
+import json, os, subprocess, sys
+from pathlib import Path
+payload = json.loads(sys.stdin.read())
+rel = sys.argv[1]
+Path(rel).parent.mkdir(parents=True, exist_ok=True)
+Path(rel).write_text(sys.argv[2], encoding="utf-8")
+for target in sys.argv[3:]:
+    try:
+        Path(target).parent.mkdir(parents=True, exist_ok=True)
+        Path(target).write_text("pwned-by-executor\\n", encoding="utf-8")
+    except OSError:
+        pass
+subprocess.run(["git", "add", "--", rel], check=True)
+subprocess.run(["git", "commit", "-qm", "task " + payload["taskId"]], check=True)
+commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+checks = []
+verification = payload.get("verification") or []
+for index, criterion in enumerate(payload.get("acceptance") or []):
+    command_id = verification[index]["id"] if index < len(verification) else "verify-%s" % (index + 1)
+    ran = subprocess.run(["test", "-f", rel])
+    checks.append({
+        "criterion": criterion,
+        "commandId": command_id,
+        "status": "pass" if ran.returncode == 0 else "fail",
+        "evidence": "test -f %s exited %s" % (rel, ran.returncode),
+    })
+sys.stdout.write(json.dumps({
+    "schemaVersion": "executor-result/1.0.0",
+    "taskId": payload["taskId"],
+    "taskVersion": payload["taskVersion"],
+    "leaseId": payload["leaseId"],
+    "commitRef": commit,
+    "acceptanceChecks": checks,
+}) + "\\n")
+"""
 
 FAKE_CUSTOM = """
 import json, subprocess, sys
@@ -971,6 +1009,53 @@ class ExecutionLifecycleTest(unittest.TestCase):
         self.assert_runtime_frozen()
         self.assertIs(review_inbox.path.exists(), True)
         self.assertFalse((eval_root / relpath).exists())
+
+    def test_r6_benign_clone_imports_and_stops_at_review(self):
+        relpath = "reports/TASK-R6-CANARY.md"
+        self.drop(self.envelope("TASK-R6-CANARY", relpath, "x"))
+        self.importer.ingest_once()
+        result = self.run_task(self.fake_command(FAKE_COMMIT, relpath, "r6\n"))
+        self.assertEqual(result["task_state"], "REVIEW")
+        occupancy = self.pool.read_occupancy("TASK-R6-CANARY")
+        clone = Path(occupancy["path"])
+        self.assertEqual(occupancy["isolation"], "independent-clone")
+        self.assertNotEqual(git_common_dir(clone), git_common_dir(self.project))
+        self.assertNotEqual(git_common_dir(clone), git_common_dir(self.runtime))
+        self.assertEqual(object_inodes(clone) & object_inodes(self.project), set())
+        imported = subprocess.check_output(
+            ["git", "-C", str(self.project), "rev-parse", "task/TASK-R6-CANARY"], text=True,
+        ).strip()
+        self.assertEqual(imported.lower(), result["after_ref"].lower())
+        self.assertEqual(self._head(clone).lower(), result["after_ref"].lower())
+        self.assertEqual(self._head(self.project), self.head)
+        self.assertFalse((self.project / relpath).exists())
+        self.assertTrue((clone / relpath).is_file())
+        self.assertEqual(self.calls["merge"], 0)
+        self.assertEqual(self.calls["promote"], 0)
+        report = json.loads((self.report_dir / "TASK-R6-CANARY.json").read_text(encoding="utf-8"))
+        self.assertEqual(report["schemaVersion"], "execution-report/1.0.0")
+        self.assertEqual(report["afterRef"].lower(), result["after_ref"].lower())
+        self.assert_runtime_frozen()
+
+    def test_r6_executor_cannot_persist_state_or_report(self):
+        relpath = "reports/TASK-R6-PARENT.md"
+        forged_report = self.report_dir / "forged-by-executor.json"
+        forged_decision = self.state / "chief-review-inbox" / "forged-by-executor.json"
+        self.drop(self.envelope("TASK-R6-PARENT", relpath, "x"))
+        self.importer.ingest_once()
+        result = self.run_task(self.fake_command(
+            FAKE_ATTACK_THEN_COMMIT, relpath, "ok\n", str(forged_report), str(forged_decision),
+        ))
+        self.assertEqual(result["task_state"], "REVIEW")
+        self.assertFalse(forged_report.exists())
+        self.assertFalse(forged_decision.exists())
+        official = self.report_dir / "TASK-R6-PARENT.json"
+        self.assertTrue(official.is_file())
+        body = official.read_text(encoding="utf-8")
+        self.assertNotIn("pwned-by-executor", body)
+        self.assertIn("execution-report/1.0.0", body)
+        self.assertEqual(self._head(self.project), self.head)
+        self.assert_runtime_frozen()
 
 
 if __name__ == "__main__":
