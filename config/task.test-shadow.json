@@ -1,0 +1,20 @@
+{
+  "id": "TASK-SHADOW-001",
+  "projectId": "control-panel",
+  "title": "Shadow validation: read-only docs probe",
+  "objective": "Confirm the executor can acquire a lease via the Dispatcher and report a read-only fact without modifying any files or state.",
+  "scope": [
+    "Read exactly one file under workspaceRoots and report its absolute path, line count, and sha256 hex digest."
+  ],
+  "acceptance": [
+    "Report contains the absolute file path, a non-zero line count, and a sha256 hex digest.",
+    "No files were created, modified, or deleted during execution.",
+    "No production services were changed; no publish/push/merge occurred."
+  ],
+  "priority": "P3",
+  "riskLevel": "low",
+  "allowedExecutors": ["workbuddy-hy3"],
+  "workspaceRoots": ["/Users/pojian/repos/director-control-plane/docs"],
+  "dependencies": [],
+  "sourceUri": "config/task.test-shadow.json"
+}

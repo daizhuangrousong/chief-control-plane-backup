@@ -1,0 +1,27 @@
+{
+  "id": "TASK-TRANSITION-HUMAN-LOOP-1",
+  "projectId": "control-panel",
+  "title": "第一次人工闭环：Phase 2→3 准入清单落页（H1-A）",
+  "objective": "完成登记→人工执行→验证→task review 结案；交付物为可勾选准入清单页；全程无自动 executor。",
+  "scope": [
+    "交付物：Cursor canvas phase-23-gate-checklist（H1-A）",
+    "执行人：Owner 人工；禁止 WorkBuddy / Cursor 自动 executor 领取",
+    "禁止 Julius；禁止 ~/repos/director 权威树；禁止业务修复"
+  ],
+  "acceptance": [
+    "台账中本任务经 task review 结为 DONE，且有 actor+evidence",
+    "未使用 task transition --to DONE",
+    "闭环窗口内无新的 correction_poll_result_*，无 fullAccess 执行会话",
+    "未改动 TASK-CORR-TASK-030-R1 / TASK-CORR-TASK-021-R1"
+  ],
+  "priority": "P1",
+  "riskLevel": "low",
+  "allowedExecutors": [
+    "owner"
+  ],
+  "workspaceRoots": [
+    "/Users/pojian/.cursor/projects/Users-pojian-repos/canvases"
+  ],
+  "dependencies": [],
+  "sourceUri": "canvas:phase-23-gate-checklist"
+}

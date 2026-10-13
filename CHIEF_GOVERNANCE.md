@@ -2,7 +2,16 @@
 
 观察态登记。不执行、不改 Director 热树、不自动上线。
 
-当前阶段：**Clock Proof 今日完成**。钟继续跑。下一阶段是 **Status Contract v1**（`STATUS_CONTRACT.md`），不是换手。本文件其余条目仍只更新目标。
+当前阶段：**Clock Proof 已完成**。钟继续跑。Owner 于 2026-08-20 解冻“受限本机 Cursor Runner”的设计与实现；先做 R0 安全适配器，不等于 Runner 已上线。Status Contract v1 仍须在真实换手前采纳。
+
+## CURSOR-RUNNER · 受限执行桥
+
+- 状态：**AUTHORIZED_R0 · NOT ACTIVE**
+- Chief 只读项目事实、写 Goal / Task Brief / Review / Decision，不执行代码、测试、提交、合并、部署或回滚。
+- Runner 只把已通过确定性门禁的任务交给对应 Cursor Executor；不得生成任务、改方向或改验收标准。
+- 修改知识库、数据库、产品方向或验收标准，必须带 Owner 批准引用，否则不得进入 READY。
+- R0 只实现适配器、白名单、审计和 fake executor 测试；禁止真实启动 Cursor、launchd、Julius 或 Director。
+- 首张任务书：`reports/CURSOR_RUNNER_V1_EXECUTOR_BRIEF_2026-08-20.md`。
 
 ## D-EVOL · Director Maintenance & Evolution Loop
 
@@ -93,4 +102,3 @@ Interaction Asset 星图网页 / Julius Agent / C端  调用入口
 ### 与 8/31
 
 黄仁勋 · 手艺与信念 = 第一个节点 + 长内容（Content）+ 知识地图（Interaction 雏形）。J3 继续。未点名不建 C 端网页、不铺检索、不改成聊天站。
-
